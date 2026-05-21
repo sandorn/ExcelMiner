@@ -1,0 +1,71 @@
+[package]
+name = "excelminer"
+version = "0.1.0"
+description = "子公司经营数据汇总分析系统"
+authors = ["ExcelMiner"]
+edition = "2021"
+default-run = "excelminer"
+
+[lib]
+name = "excelminer_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[[bin]]
+name = "excelminer"
+path = "src/main.rs"
+
+[dependencies]
+# Tauri v2
+tauri = { version = "2", features = ["devtools"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-shell = "2"
+tauri-plugin-clipboard-manager = "2"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Excel
+calamine = "0.26"
+
+# Data processing (Phase 2: 添加 polars 做数据聚合)
+# polars = { version = "0.46", features = ["lazy", "fmt", "strings", "dtype-full"] }
+
+# Excel writing (Phase 4)
+rust_xlsxwriter = "0.80"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Utilities
+chrono = "0.4"
+regex = "1"
+uuid = { version = "1", features = ["v4"] }
+dirs = "6"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dev-dependencies]
+tempfile = "3"
+zip = "2"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+opt-level = "s"
+panic = "abort"

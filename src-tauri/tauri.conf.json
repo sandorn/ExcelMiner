@@ -1,0 +1,42 @@
+{
+    "$schema": "https://raw.githubusercontent.com/nicegui/tauri-v2-docs/main/docs/.vitepress/public/tauri-v2.schema.json",
+    "productName": "ExcelMiner",
+    "version": "0.1.0",
+    "identifier": "com.excelminer.app",
+    "build": {
+        "frontendDist": "../dist",
+        "devUrl": "http://localhost:1420",
+        "beforeDevCommand": "npm run dev",
+        "beforeBuildCommand": "npm run build"
+    },
+    "app": {
+        "windows": [
+            {
+                "title": "ExcelMiner",
+                "width": 1280,
+                "height": 860,
+                "minWidth": 1024,
+                "minHeight": 700,
+                "center": true,
+                "resizable": true,
+                "decorations": true
+            }
+        ],
+        "security": {
+            "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com"
+        }
+    },
+    "bundle": {
+        "active": true,
+        "targets": "all",
+        "icon": [],
+        "windows": {
+            "wix": {
+                "language": "zh-CN"
+            },
+            "nsis": {
+                "languages": ["SimpChinese", "English"]
+            }
+        }
+    }
+}
