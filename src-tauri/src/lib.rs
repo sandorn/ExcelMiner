@@ -23,7 +23,7 @@ pub fn run() {
         .join("logs");
     std::fs::create_dir_all(&log_dir).ok();
 
-    let file_appender = tracing_appender::rolling::daily(&log_dir, "app.log");
+    let file_appender = tracing_appender::rolling::never(&log_dir, "app.log");
     let (non_blocking, log_guard) = tracing_appender::non_blocking(file_appender);
 
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()

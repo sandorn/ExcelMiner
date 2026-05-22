@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::models::analysis::AnalysisQuality;
+use crate::models::project::BusinessType;
 
 /// 质量检查结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,9 +34,9 @@ impl QualityChecker {
         }
     }
 
-    /// 从分析内容计算质量评分（直接使用 AnalysisQuality::from_content）
-    pub fn evaluate(&self, company_name: &str, content: &str) -> QualityResult {
-        let details = AnalysisQuality::from_content(company_name, content);
+    /// 从分析内容计算质量评分（按业态适配评分维度）
+    pub fn evaluate(&self, company_name: &str, content: &str, business_type: Option<&BusinessType>) -> QualityResult {
+        let details = AnalysisQuality::from_content(company_name, content, business_type);
         let score = details.score;
 
         QualityResult {
@@ -43,7 +44,7 @@ impl QualityChecker {
             passed: score >= self.threshold,
             reason: if score < self.threshold {
                 Some(format!(
-                    "评分 {} 低于阈值 {}，需要重新分析 (摘要:{}, 营收:{}, EBITDA:{}, 现金流:{}, 支出:{})",
+                    "评分 {} 低于阈值 {} (摘要:{}, 维度1:{}, 维度2:{}, 维度3:{}, 维度4:{})",
                     score,
                     self.threshold,
                     if details.has_summary { "✓" } else { "✗" },

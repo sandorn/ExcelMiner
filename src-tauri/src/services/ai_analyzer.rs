@@ -200,7 +200,7 @@ impl AIAnalyzer {
                             let company_content = extract_company_section(&content, company_name)
                                 .unwrap_or_else(|| content.clone());
 
-                            let qr = checker.evaluate(company_name, &company_content);
+                            let qr = checker.evaluate(company_name, &company_content, Some(&business_type));
                             let score = qr.score;
 
                             if score >= self.config.quality_threshold {
@@ -250,6 +250,24 @@ impl AIAnalyzer {
                             }
                         }
                     }
+                }
+            }
+            // 所有重试耗尽仍不通过 → 保留最后一次的结果（即使评分不足）
+            if batch_results.is_empty() {
+                for (company_name, _data_text) in *batch {
+                    batch_results.push(AnalysisResult {
+                        company_name: company_name.to_string(),
+                        business_type: business_type.to_string(),
+                        content: String::new(),
+                        quality_score: 0,
+                        retry_count: self.config.max_retries,
+                        token_usage: None,
+                        success: false,
+                        error_message: Some(format!(
+                            "质量评分均低于阈值 {}，已重试 {} 次",
+                            self.config.quality_threshold, self.config.max_retries
+                        )),
+                    });
                 }
             }
             results.extend(batch_results);

@@ -28,9 +28,21 @@ impl ReportWriter {
         ws.write(2, 0, "项目名称")?; ws.write(2, 1, project_name)?;
 
         // 汇总数据 Sheets
+        let mut used_names: std::collections::HashSet<String> = std::collections::HashSet::new();
         for r in aggregation_results {
+            let mut sheet_name = sanitize(&r.engine_name);
+            if used_names.contains(&sheet_name) {
+                for i in 2u32.. {
+                    let alt = format!("{}_{}", sheet_name, i);
+                    if !used_names.contains(&alt) {
+                        sheet_name = alt;
+                        break;
+                    }
+                }
+            }
+            used_names.insert(sheet_name.clone());
             let mut ws = workbook.add_worksheet();
-            ws.set_name(&sanitize(&r.engine_name))?;
+            ws.set_name(&sheet_name)?;
             if let Ok(cos) = serde_json::from_str::<Vec<serde_json::Value>>(&r.summary_data) {
                 let (headers, rows) = flatten(&cos);
                 writetable(&mut ws, &headers, &rows, &hdr, &nf)?;
@@ -59,6 +71,9 @@ impl ReportWriter {
             }
         }
 
+        if let Some(parent) = Path::parent(output_path) {
+            std::fs::create_dir_all(parent).ok();
+        }
         workbook.save(output_path.to_str().unwrap_or("o.xlsx"))
             .map_err(|e| AppError::Other(format!("保存失败: {}", e)))
     }

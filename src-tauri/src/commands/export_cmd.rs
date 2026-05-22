@@ -20,6 +20,7 @@ pub async fn export_report(
         .ok_or_else(|| AppError::Other("请先打开或创建项目".into()))?;
 
     let output_path = project.output_file.to_string_lossy().to_string();
+    let output_path = output_path.replace('\\', "/");
     tracing::info!("导出报表到: {}", output_path);
 
     // 从 AppState 读取实际汇总和分析结果

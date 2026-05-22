@@ -105,14 +105,8 @@ pub struct AnalysisQuality {
 }
 
 impl AnalysisQuality {
-    /// 从分析内容文本计算质量评分
-    /// 规则：5个维度，每项2分，满分10分
-    ///   - 首行摘要（不含指标关键词）→ 2分
-    ///   - 营业收入 → 2分
-    ///   - EBITDA/扣非利润 → 2分
-    ///   - 经营活动净现金流 → 2分
-    ///   - 经营支出 → 2分
-    pub fn from_content(company_name: &str, content: &str) -> Self {
+    /// 从分析内容文本计算质量评分（按业态适配维度）
+    pub fn from_content(company_name: &str, content: &str, business_type: Option<&super::project::BusinessType>) -> Self {
         let lines: Vec<&str> = content
             .lines()
             .filter(|l| !l.trim().is_empty())
@@ -120,8 +114,6 @@ impl AnalysisQuality {
         let total_lines = lines.len();
 
         let content_lower = content.to_lowercase();
-
-        // 判断首行是否为摘要（不含具体指标关键词）
         let first_nonempty = lines
             .first()
             .map(|l| l.to_lowercase())
@@ -129,34 +121,57 @@ impl AnalysisQuality {
 
         let indicator_keywords = [
             "营业收入", "ebitda", "扣非", "经营活动",
-            "经营支出", "现金流",
+            "经营支出", "现金流", "人力", "承保", "保费",
+            "营销", "ota", "入住率", "整体情况", "合作渠道",
+            "自有招商", "续租",
         ];
         let has_summary = !first_nonempty.is_empty()
             && !indicator_keywords
                 .iter()
                 .any(|kw| first_nonempty.contains(kw));
 
-        let has_revenue = content_lower.contains("营业收入");
-        let has_ebitda = content_lower.contains("ebitda")
-            || content_lower.contains("扣非利润");
-        let has_cashflow = content_lower.contains("经营活动净现金流")
-            || content_lower.contains("现金流");
-        let has_expense = content_lower.contains("经营支出");
+        // 按业态检测不同维度
+        let (d1, d2, d3, d4) = match business_type {
+            Some(super::project::BusinessType::Insurance) => (
+                content_lower.contains("人力"),
+                content_lower.contains("承保") || content_lower.contains("新单"),
+                content_lower.contains("保费") || content_lower.contains("规模"),
+                false,
+            ),
+            Some(super::project::BusinessType::Hotel) => (
+                content_lower.contains("营销") || content_lower.contains("活动"),
+                content_lower.contains("ota") || content_lower.contains("评价") || content_lower.contains("评分"),
+                content_lower.contains("入住率") || content_lower.contains("入住"),
+                false,
+            ),
+            Some(super::project::BusinessType::Commercial) => (
+                content_lower.contains("整体") || content_lower.contains("情况"),
+                content_lower.contains("合作") || content_lower.contains("渠道"),
+                content_lower.contains("招商") || content_lower.contains("自有"),
+                content_lower.contains("续租"),
+            ),
+            None => (
+                content_lower.contains("营业收入"),
+                content_lower.contains("ebitda") || content_lower.contains("扣非利润"),
+                content_lower.contains("经营活动净现金流") || content_lower.contains("现金流"),
+                content_lower.contains("经营支出"),
+            ),
+        };
 
         let mut score = 0u32;
         if has_summary { score += 2; }
-        if has_revenue { score += 2; }
-        if has_ebitda { score += 2; }
-        if has_cashflow { score += 2; }
-        if has_expense { score += 2; }
+        if d1 { score += 2; }
+        if d2 { score += 2; }
+        if d3 { score += 2; }
+        if d4 { score += 2; }
 
         Self {
             company_name: company_name.into(),
             has_summary,
-            has_revenue,
-            has_ebitda,
-            has_cashflow,
-            has_expense,
+            has_revenue: d1,
+            has_ebitda: d2,
+            has_cashflow: d3,
+            has_expense: d4,
             total_lines,
             score,
         }

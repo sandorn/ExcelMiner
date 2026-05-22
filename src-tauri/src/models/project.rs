@@ -102,7 +102,7 @@ fn default_max_retries() -> u32 {
     3
 }
 fn default_quality_threshold() -> u32 {
-    8
+    4
 }
 
 impl Default for AIConfig {
