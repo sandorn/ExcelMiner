@@ -11,6 +11,7 @@
     },
     "dependencies": {
         "@ant-design/icons": "^5.5.1",
+        "@playwright/test": "^1.60.0",
         "@tauri-apps/api": "^2.2.0",
         "@tauri-apps/plugin-clipboard-manager": "^2.2.0",
         "@tauri-apps/plugin-dialog": "^2.2.0",
@@ -30,5 +31,14 @@
         "@vitejs/plugin-react": "^4.3.4",
         "typescript": "^5.7.0",
         "vite": "^6.0.0"
-    }
+    },
+    "description": "",
+    "main": "index.js",
+    "repository": {
+        "type": "git",
+        "url": "https://gitee.com/sandorn/excel-miner.git      # 拉取源"
+    },
+    "keywords": [],
+    "author": "",
+    "license": "ISC"
 }
