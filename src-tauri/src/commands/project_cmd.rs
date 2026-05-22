@@ -5,13 +5,19 @@ use tauri::State;
 use tokio::sync::Mutex;
 
 use crate::config::AppConfig;
-use crate::error::{AppError, AppResult};
+use crate::error::AppError;
 use crate::models::project::{Project, ProjectConfig};
 
 /// 全局应用状态
 pub struct AppState {
     pub config: Mutex<AppConfig>,
     pub current_project: Mutex<Option<Project>>,
+    /// 最近一次汇总的结果（跨步骤共享）
+    pub aggregation_results: Mutex<Vec<crate::models::analysis::AggregationResult>>,
+    /// 最近一次 AI 分析的结果（跨步骤共享）
+    pub analysis_results: Mutex<Vec<crate::models::analysis::AnalysisResult>>,
+    /// 日志文件写入 guard（持有期间保证日志刷新到磁盘）
+    pub _log_guard: Mutex<Option<tracing_appender::non_blocking::WorkerGuard>>,
 }
 
 /// 创建新项目

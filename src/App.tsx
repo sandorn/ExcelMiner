@@ -5,7 +5,7 @@ import {
     useNavigate,
     useLocation,
 } from 'react-router-dom';
-import { Layout, Menu, Button, Typography, Steps, theme } from 'antd';
+import { Layout, Button, Typography, Steps, theme } from 'antd';
 import {
     SettingOutlined,
     ImportOutlined,

@@ -1,14 +1,14 @@
 //! 保险数据汇总引擎
 //!
-//! 数据源: 活动量/ 文件夹下 盛唐融信.xlsx 和 君康经纪.xlsx
+//! 数据源: 活动量/ 文件夹下各保险子公司 .xlsx
 //! 源Sheet: "保险类"
+//! 公司列表从 resources/companies.toml 的 [insurance] 段读取
 //! 参考 VBA: 保险数据汇总.bas
 
-use std::path::PathBuf;
-
-use crate::error::{AppError, AppResult};
+use crate::error::AppResult;
 use crate::models::analysis::{AggregationResult, PreviewData};
 use crate::models::project::Project;
+use crate::services::company_registry::company_registry;
 use crate::services::excel_reader::ExcelReader;
 use crate::services::number_parser::extract_number;
 use crate::services::data_aggregator::{AggregationEngine, EngineType};
@@ -26,10 +26,6 @@ const ROW_AR_25: usize = 16;
 const ROW_RC_25: usize = 17;
 const ROW_POLICIES: usize = 18;
 
-const COMPANIES: &[(&str, usize)] = &[
-    ("盛唐融信", 3), ("君康经纪", 4),
-];
-
 pub struct InsuranceAggregator;
 
 impl AggregationEngine for InsuranceAggregator {
@@ -37,35 +33,39 @@ impl AggregationEngine for InsuranceAggregator {
     fn name(&self) -> &str { "保险数据汇总" }
 
     fn preview(&self, project: &Project) -> AppResult<PreviewData> {
+        let registry = company_registry();
         let folder = project.data_folder.join("活动量");
         let mut files = Vec::new();
-        for (name, _) in COMPANIES {
-            let p = folder.join(format!("{}.xlsx", name));
+        for c in &registry.insurance {
+            let p = folder.join(format!("{}.xlsx", c.name));
             if p.exists() { files.push(p.to_string_lossy().to_string()); }
         }
         let file_count = files.len();
+        let total = registry.insurance.len();
         Ok(PreviewData {
             engine_name: self.name().into(), files_found: files,
             sheets_detected: vec!["保险类".into()],
-            companies_detected: COMPANIES.iter().map(|(n,_)| n.to_string()).collect(),
+            companies_detected: registry.insurance.iter().map(|c| c.name.clone()).collect(),
             available_indicators: vec![
                 "期初人力".into(),"入职".into(),"离职".into(),"净增".into(),
                 "月末人力".into(),"平均人力".into(),"开单人数".into(),
                 "新单保费".into(),"期交保费".into(),"13月续期".into(),
                 "25月续期".into(),"承保件数".into(),
             ],
-            warnings: if file_count < COMPANIES.len() {
+            warnings: if file_count < total {
                 vec!["部分公司源文件未找到".into()] } else { vec![] },
         })
     }
 
     fn execute(&self, project: &Project) -> AppResult<AggregationResult> {
+        let registry = company_registry();
         let folder = project.data_folder.join("活动量");
         let num_months = project.ytd_months.max(1).min(12) as usize;
         let mut warnings = Vec::new();
         let mut results: Vec<serde_json::Value> = Vec::new();
 
-        for (company_name, _target_col) in COMPANIES {
+        for company in &registry.insurance {
+            let company_name = &company.name;
             let path = folder.join(format!("{}.xlsx", company_name));
             let mut reader = match ExcelReader::open(&path) {
                 Ok(r) => r,

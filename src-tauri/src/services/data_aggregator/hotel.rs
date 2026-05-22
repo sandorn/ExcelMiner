@@ -1,20 +1,22 @@
 //! 酒店数据汇总引擎
 //!
-//! 数据源: 活动量/ + 经营报表/ 文件夹下 .xlsx
+//! 数据源: 活动量/ + 经营报表/ 文件夹下各酒店子公司 .xlsx
 //! 汇总内容: 营销活动(投放/受众/成交) + 业务指标(OTA评分/入住率)
+//! 公司列表从 resources/companies.toml 的 [hotel] 段读取
 //! 参考 VBA: 酒店数据汇总.bas
 
 use crate::error::AppResult;
 use crate::models::analysis::{AggregationResult, PreviewData};
 use crate::models::project::Project;
+use crate::services::company_registry::company_registry;
 use crate::services::excel_reader::ExcelReader;
 use crate::services::number_parser::extract_number;
 use crate::services::data_aggregator::{AggregationEngine, EngineType};
 
-// 伯豪瑞廷 营销活动行号 (多行合计)
-const BHRT_PUT_ROWS: &[usize] = &[12, 13, 14];   // 投放数量: 官微/抖音/OTA
-const BHRT_AUD_ROWS: &[usize] = &[15, 16, 17];   // 受众数量
-const BHRT_DEAL_ROWS: &[usize] = &[18, 19, 20];  // 成交数量
+// 伯豪瑞廷 营销活动行号 (多行合计: 官微+抖音+OTA)
+const BHRT_PUT_ROWS: &[usize] = &[12, 13, 14];
+const BHRT_AUD_ROWS: &[usize] = &[15, 16, 17];
+const BHRT_DEAL_ROWS: &[usize] = &[18, 19, 20];
 // 重庆瑞尔 营销活动行号 (单行)
 const CQRER_PUT_ROW: usize = 12;
 const CQRER_AUD_ROW: usize = 13;
@@ -23,11 +25,6 @@ const CQRER_DEAL_ROW: usize = 14;
 const REPORT_ROW_OCC: usize = 15;  // 月均入住率
 const REPORT_ROW_OTA: usize = 17;  // OTA网络评价
 
-const COMPANIES: &[(&str, &str, &str, bool)] = &[
-    ("伯豪瑞廷", "酒店类", "指标统计", true),   // BHRT: 达成列从E=5开始
-    ("重庆瑞尔", "酒店类", "指标统计", false),   // CQRER: 达成列从D=4开始
-];
-
 pub struct HotelAggregator;
 
 impl AggregationEngine for HotelAggregator {
@@ -35,17 +32,18 @@ impl AggregationEngine for HotelAggregator {
     fn name(&self) -> &str { "酒店数据汇总" }
 
     fn preview(&self, project: &Project) -> AppResult<PreviewData> {
+        let registry = company_registry();
         let act = project.data_folder.join("活动量");
         let rep = project.data_folder.join("经营报表");
         let mut files = Vec::new();
-        for (name, _, _, _) in COMPANIES {
-            if act.join(format!("{}.xlsx", name)).exists() { files.push(name.to_string()); }
-            if rep.join(format!("{}.xlsx", name)).exists() { files.push(format!("{}(经营报表)", name)); }
+        for h in &registry.hotel {
+            if act.join(format!("{}.xlsx", h.name)).exists() { files.push(h.name.clone()); }
+            if rep.join(format!("{}.xlsx", h.name)).exists() { files.push(format!("{}(经营报表)", h.name)); }
         }
         Ok(PreviewData {
             engine_name: self.name().into(), files_found: files,
             sheets_detected: vec!["酒店类".into(), "指标统计".into()],
-            companies_detected: COMPANIES.iter().map(|(n,_,_,_)| n.to_string()).collect(),
+            companies_detected: registry.hotel.iter().map(|h| h.name.clone()).collect(),
             available_indicators: vec![
                 "投放数量".into(),"受众数量".into(),"成交数量".into(),
                 "转化率".into(),"月均入住率".into(),"OTA网络评价".into(),
@@ -55,13 +53,19 @@ impl AggregationEngine for HotelAggregator {
     }
 
     fn execute(&self, project: &Project) -> AppResult<AggregationResult> {
+        let registry = company_registry();
         let act_folder = project.data_folder.join("活动量");
         let rep_folder = project.data_folder.join("经营报表");
         let num_months = project.ytd_months.max(1).min(12) as usize;
         let mut warnings = Vec::new();
         let mut results: Vec<serde_json::Value> = Vec::new();
 
-        for (company_name, act_sheet, rep_sheet, is_bhrt) in COMPANIES {
+        for hotel in &registry.hotel {
+            let company_name = &hotel.name;
+            let is_bhrt = hotel.is_bhrt;
+            let act_sheet = "酒店类";
+            let rep_sheet = "指标统计";
+
             // --- 营销活动数据 ---
             let act_path = act_folder.join(format!("{}.xlsx", company_name));
             let mut reader = match ExcelReader::open(&act_path) {
@@ -84,7 +88,7 @@ impl AggregationEngine for HotelAggregator {
 
             // BHRT达成列从E=5开始: 2*m+3; CQRER从D=4开始: 2*m+2
             let ach_col = |m: usize| -> usize {
-                if *is_bhrt { 2 * m + 3 } else { 2 * m + 2 }
+                if is_bhrt { 2 * m + 3 } else { 2 * m + 2 }
             };
             let sum_rows = |rs: &[usize]| -> f64 {
                 rs.iter().map(|&r| (1..=num_months).map(|m| cell(r, ach_col(m))).sum::<f64>()).sum()
@@ -93,7 +97,7 @@ impl AggregationEngine for HotelAggregator {
             let put_total: f64;
             let aud_total: f64;
             let deal_total: f64;
-            if *is_bhrt {
+            if is_bhrt {
                 put_total = sum_rows(BHRT_PUT_ROWS);
                 aud_total = sum_rows(BHRT_AUD_ROWS);
                 deal_total = sum_rows(BHRT_DEAL_ROWS);

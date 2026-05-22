@@ -1,5 +1,4 @@
-use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use serde::Serialize;
 
 /// 统一错误类型
 #[derive(Debug, thiserror::Error, Serialize)]

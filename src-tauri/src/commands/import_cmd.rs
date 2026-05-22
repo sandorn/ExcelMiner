@@ -1,7 +1,8 @@
 //! 数据导入命令
 
-use tauri::{Emitter, Window};
+use tauri::{Emitter, State, Window};
 
+use crate::commands::project_cmd::AppState;
 use crate::error::AppError;
 use crate::models::analysis::{AggregationResult, PreviewData};
 use crate::models::project::Project;
@@ -26,6 +27,7 @@ pub async fn preview_import(
 /// 执行数据汇总
 #[tauri::command]
 pub async fn execute_aggregation(
+    state: State<'_, AppState>,
     project: Project,
     engines: Vec<String>,
     window: Window,
@@ -52,6 +54,9 @@ pub async fn execute_aggregation(
         "status": "done",
         "engine": null,
     }));
+
+    // 存储到 AppState 供后续步骤使用
+    *state.aggregation_results.lock().await = results.clone();
 
     Ok(results)
 }

@@ -24,9 +24,7 @@ pub fn run() {
     std::fs::create_dir_all(&log_dir).ok();
 
     let file_appender = tracing_appender::rolling::daily(&log_dir, "app.log");
-    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
-    // 泄漏 _guard 以保持日志写入（整个程序生命周期）
-    std::mem::forget(_guard);
+    let (non_blocking, log_guard) = tracing_appender::non_blocking(file_appender);
 
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| "excelminer=info".into());
@@ -49,6 +47,9 @@ pub fn run() {
             let state = AppState {
                 config: Mutex::new(config),
                 current_project: Mutex::new(None),
+                aggregation_results: Mutex::new(Vec::new()),
+                analysis_results: Mutex::new(Vec::new()),
+                _log_guard: Mutex::new(Some(log_guard)),
             };
             app.manage(state);
             tracing::info!("ExcelMiner 初始化完成");

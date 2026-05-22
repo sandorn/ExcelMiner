@@ -1,12 +1,14 @@
 //! 商写数据汇总引擎
 //!
-//! 数据源: 活动量/ 文件夹下 5家公司 .xlsx
+//! 数据源: 活动量/ 文件夹下各商写子公司 .xlsx
 //! 源Sheet: "写字楼和商业综合体类"
+//! 公司列表从 resources/companies.toml 的 [commercial] 段读取
 //! 参考 VBA: 商写数据汇总.bas
 
 use crate::error::AppResult;
 use crate::models::analysis::{AggregationResult, PreviewData};
 use crate::models::project::Project;
+use crate::services::company_registry::company_registry;
 use crate::services::excel_reader::ExcelReader;
 use crate::services::number_parser::extract_number;
 use crate::services::data_aggregator::{AggregationEngine, EngineType};
@@ -25,11 +27,6 @@ const ROW_SELF_SIGN: usize = 16;
 const ROW_EXPIRE: usize = 19;
 const ROW_RENEW: usize = 20;
 
-const COMPANIES: &[(&str, usize)] = &[
-    ("北京中言", 3), ("大连凯丹", 4), ("福建钱隆", 5),
-    ("春夏秋冬", 6), ("重庆宜新", 7),
-];
-
 pub struct CommercialAggregator;
 
 impl AggregationEngine for CommercialAggregator {
@@ -37,35 +34,39 @@ impl AggregationEngine for CommercialAggregator {
     fn name(&self) -> &str { "商写数据汇总" }
 
     fn preview(&self, project: &Project) -> AppResult<PreviewData> {
+        let registry = company_registry();
         let folder = project.data_folder.join("活动量");
         let mut files = Vec::new();
-        for (name, _) in COMPANIES {
-            let p = folder.join(format!("{}.xlsx", name));
+        for c in &registry.commercial {
+            let p = folder.join(format!("{}.xlsx", c.name));
             if p.exists() { files.push(p.to_string_lossy().to_string()); }
         }
         let file_count = files.len();
+        let total = registry.commercial.len();
         Ok(PreviewData {
             engine_name: self.name().into(), files_found: files,
             sheets_detected: vec!["写字楼和商业综合体类".into()],
-            companies_detected: COMPANIES.iter().map(|(n,_)| n.to_string()).collect(),
+            companies_detected: registry.commercial.iter().map(|c| c.name.clone()).collect(),
             available_indicators: vec![
                 "期初面积".into(),"新增签约面积".into(),"退租面积".into(),
                 "月末面积".into(),"渠道带客".into(),"渠道成交".into(),
                 "渠道签约面积".into(),"自营带客".into(),"自营成交".into(),
                 "自营签约面积".into(),"到期面积".into(),"续签面积".into(),
             ],
-            warnings: if file_count < COMPANIES.len() {
+            warnings: if file_count < total {
                 vec!["部分公司源文件未找到".into()] } else { vec![] },
         })
     }
 
     fn execute(&self, project: &Project) -> AppResult<AggregationResult> {
+        let registry = company_registry();
         let folder = project.data_folder.join("活动量");
         let num_months = project.ytd_months.max(1).min(12) as usize;
         let mut warnings = Vec::new();
         let mut results: Vec<serde_json::Value> = Vec::new();
 
-        for (company_name, _target_col) in COMPANIES {
+        for company in &registry.commercial {
+            let company_name = &company.name;
             let path = folder.join(format!("{}.xlsx", company_name));
             let mut reader = match ExcelReader::open(&path) {
                 Ok(r) => r, Err(e) => {
@@ -88,7 +89,7 @@ impl AggregationEngine for CommercialAggregator {
                 (1..=num_months).map(|m| cell(r, 2*m+2)).sum()
             };
 
-            let base_area = cell(ROW_BASE_AREA, 4); // 1月达成
+            let base_area = cell(ROW_BASE_AREA, 4);
             let ytd_new_sign = sum_ach(ROW_NEW_SIGN);
             let ytd_retreat = sum_ach(ROW_RETREAT);
             let last = 2*num_months+2;

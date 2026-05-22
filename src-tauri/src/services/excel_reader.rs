@@ -13,10 +13,9 @@ pub struct ExcelReader<RS: std::io::Read + std::io::Seek> {
     workbook: Xlsx<RS>,
 }
 
-/// Sheet 数据
+/// Sheet 数据 (rows[0] 即 Excel 第 1 行，与 VBA Row 编号一致)
 #[derive(Debug, Clone)]
 pub struct SheetData {
-    pub headers: Vec<String>,
     pub rows: Vec<Vec<String>>,
     pub dimensions: (usize, usize),
 }
@@ -51,12 +50,10 @@ impl<RS: std::io::Read + std::io::Seek> ExcelReader<RS> {
             .map(|row| row.iter().map(|c| cell_to_string(c)).collect())
             .collect();
 
-        let headers = rows.first().cloned().unwrap_or_default();
         let row_count = rows.len();
-        let col_count = headers.len();
+        let col_count = rows.first().map(|r| r.len()).unwrap_or(0);
 
         Ok(SheetData {
-            headers,
             rows,
             dimensions: (row_count, col_count),
         })
@@ -140,6 +137,5 @@ fn cell_to_string(cell: &Data) -> String {
         Data::DateTime(d) => d.to_string(),
         Data::Error(e) => e.to_string(),
         Data::DateTimeIso(s) | Data::DurationIso(s) => s.clone(),
-        _ => String::new(),
     }
 }

@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use crate::error::{AppError, AppResult};
-use crate::models::project::{AIConfig, Company, Project};
 
 /// 全局应用配置（存储在 %APPDATA%/ExcelMiner/config.toml）
 #[derive(Debug, Clone, Serialize, Deserialize)]

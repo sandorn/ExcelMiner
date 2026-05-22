@@ -136,79 +136,109 @@ impl AIAnalyzer {
     }
 
     /// 分批分析（带重试和质量检查）
+    /// 每批将多个公司的数据合并到一次 API 调用中，由 batch_size 控制每批公司数
     pub async fn analyze_batch<F>(
         &self,
         business_type: BusinessType,
-        companies_data: &[(String, String)],  // (公司名, 汇总数据文本)
+        companies_data: &[(String, String)],
+        custom_prompt: Option<&str>,
         on_progress: F,
     ) -> AppResult<Vec<AnalysisResult>>
     where
         F: Fn(ProgressUpdate) + Send + Sync,
     {
-        let system_prompt = self.load_system_prompt(Some(&business_type))?;
-        let total_companies = companies_data.len();
-        let batch_size = self.config.batch_size.max(1);
-        let mut results = Vec::new();
+        let system_prompt = if let Some(p) = custom_prompt {
+            if !p.trim().is_empty() { p.to_string() } else {
+                self.load_system_prompt(Some(&business_type))?
+            }
+        } else {
+            self.load_system_prompt(Some(&business_type))?
+        };
 
+        let batch_size = self.config.batch_size.max(1);
         let batches: Vec<_> = companies_data.chunks(batch_size).collect();
         let total_batches = batches.len();
+        let mut results = Vec::new();
 
         for (batch_idx, batch) in batches.iter().enumerate() {
-            for (company_name, data_text) in *batch {
-                on_progress(ProgressUpdate {
-                    step: format!(
-                        "正在分析 {}业态 → {} (第{}/{}批)",
-                        business_type,
-                        company_name,
-                        batch_idx + 1,
-                        total_batches
-                    ),
-                    progress: (batch_idx as f64) / (total_batches as f64),
-                    status: crate::models::analysis::ProgressStatus::Running,
-                    company: Some(company_name.clone()),
-                });
+            let company_names: Vec<_> = batch.iter().map(|(n, _)| n.as_str()).collect();
+            let names_str = company_names.join("、");
 
-                let user_prompt = format!(
-                    "请分析以下{}业态子公司 [{}] 的经营数据：\n\n{}",
-                    business_type, company_name, data_text
-                );
+            on_progress(ProgressUpdate {
+                step: format!(
+                    "正在分析 {}业态 → {} (第{}/{}批)",
+                    business_type, names_str, batch_idx + 1, total_batches
+                ),
+                progress: (batch_idx as f64) / (total_batches as f64),
+                status: crate::models::analysis::ProgressStatus::Running,
+                company: Some(names_str.clone()),
+            });
 
-                // 带重试的调用
-                let mut final_result = None;
-                for retry in 0..self.config.max_retries {
-                    match self.call(&system_prompt, &user_prompt).await {
-                        Ok((content, usage)) => {
-                            // 质量检查 — 6维度评分（无需额外API调用）
-                            use crate::services::quality_checker::QualityChecker;
-                            let checker = QualityChecker::new(self.config.quality_threshold);
-                            let qr = checker.evaluate(company_name, &content);
+            // 将同批公司的数据合并到一个 prompt
+            let combined_data: Vec<String> = batch
+                .iter()
+                .map(|(name, data)| format!("【{}】\n{}", name, data))
+                .collect();
+            let user_prompt = format!(
+                "请分析以下{}业态子公司的经营数据：\n\n{}",
+                business_type,
+                combined_data.join("\n\n---\n\n")
+            );
+
+            // 带重试的调用
+            let mut batch_results: Vec<AnalysisResult> = Vec::new();
+            for retry in 0..self.config.max_retries {
+                match self.call(&system_prompt, &user_prompt).await {
+                    Ok((content, usage)) => {
+                        let checker = crate::services::quality_checker::QualityChecker::new(
+                            self.config.quality_threshold,
+                        );
+
+                        // 反解：将结果分配给各公司
+                        for (company_name, _data_text) in *batch {
+                            // 尝试从分析结果中提取该公司相关内容
+                            let company_content = extract_company_section(&content, company_name)
+                                .unwrap_or_else(|| content.clone());
+
+                            let qr = checker.evaluate(company_name, &company_content);
                             let score = qr.score;
 
                             if score >= self.config.quality_threshold {
-                                final_result = Some(AnalysisResult {
-                                    company_name: company_name.clone(),
+                                batch_results.push(AnalysisResult {
+                                    company_name: company_name.to_string(),
                                     business_type: business_type.to_string(),
-                                    content,
+                                    content: company_content,
                                     quality_score: score,
                                     retry_count: retry,
-                                    token_usage: usage,
+                                    token_usage: usage.clone(),
                                     success: true,
                                     error_message: None,
                                 });
-                                break;
                             } else {
                                 tracing::warn!(
-                                    "质量评分不足: {} (得分 {}/{})，重试 {}/{}",
+                                    "质量评分不足: {} (得分 {}/{})，整批重试 {}/{}",
                                     company_name, score, self.config.quality_threshold,
                                     retry + 1, self.config.max_retries
                                 );
+                                // 重试整体batch
+                                batch_results.clear();
+                                break;
                             }
                         }
-                        Err(e) => {
-                            tracing::error!("API 调用失败 ({}/{}): {}", retry + 1, self.config.max_retries, e);
-                            if retry == self.config.max_retries - 1 {
-                                final_result = Some(AnalysisResult {
-                                    company_name: company_name.clone(),
+
+                        if !batch_results.is_empty() {
+                            break; // 整批通过
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "API 调用失败 ({}/{}): {}",
+                            retry + 1, self.config.max_retries, e
+                        );
+                        if retry == self.config.max_retries - 1 {
+                            for (company_name, _data_text) in *batch {
+                                batch_results.push(AnalysisResult {
+                                    company_name: company_name.to_string(),
                                     business_type: business_type.to_string(),
                                     content: String::new(),
                                     quality_score: 0,
@@ -221,11 +251,8 @@ impl AIAnalyzer {
                         }
                     }
                 }
-
-                if let Some(result) = final_result {
-                    results.push(result);
-                }
             }
+            results.extend(batch_results);
         }
 
         on_progress(ProgressUpdate {
@@ -311,6 +338,39 @@ pub const PROMPT_FINANCIAL: &str = r#"## 角色
 ## 输出格式
 - 首行摘要≤50字，以"[年份]年前[月份]个月，[公司名称]"开头。
 - 后续每行一个指标（≤60字），包含累计数、达成率、环比趋势、波动性。"#;
+
+/// 从整批分析结果中提取单个公司的段落
+fn extract_company_section(content: &str, company_name: &str) -> Option<String> {
+    // 尝试匹配 【公司名】 或 公司名： 或 "公司名" 开头的段落
+    let lines: Vec<&str> = content.lines().collect();
+    let mut start_idx = None;
+    let patterns = [
+        format!("【{}】", company_name),
+        format!("{}：", company_name),
+        format!("{}:", company_name),
+    ];
+
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if patterns.iter().any(|p| trimmed.contains(p)) {
+            start_idx = Some(i);
+            break;
+        }
+    }
+
+    let start = start_idx?;
+    // 到下一个公司标记或文末
+    let end = lines[start + 1..]
+        .iter()
+        .position(|l| {
+            let t = l.trim();
+            t.starts_with('【') || t.contains("：") && !t.starts_with('-')
+        })
+        .map(|p| start + 1 + p)
+        .unwrap_or(lines.len());
+
+    Some(lines[start..end].join("\n"))
+}
 
 fn default_prompt_for(business_type: Option<&BusinessType>) -> String {
     match business_type {

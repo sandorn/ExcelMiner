@@ -1,7 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-use super::project::BusinessType;
-
 /// AI 分析结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnalysisResult {

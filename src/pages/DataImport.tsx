@@ -72,13 +72,20 @@ export default function DataImport() {
     const handlePreview = async () => {
         setPreviewing(true);
         try {
-            for (const engine of selectedEngines) {
-                const data = await invoke<PreviewData>('preview_import', {
-                    project: project,
-                    engine: engine,
-                });
-                setPreviewData((prev) => ({ ...prev, [engine]: data }));
+            const allPreviews = await Promise.all(
+                selectedEngines.map(async (engine) => {
+                    const data = await invoke<PreviewData>('preview_import', {
+                        project: project,
+                        engine: engine,
+                    });
+                    return { engine, data };
+                })
+            );
+            const newPreviewData: Record<string, PreviewData> = {};
+            for (const { engine, data } of allPreviews) {
+                newPreviewData[engine] = data;
             }
+            setPreviewData(newPreviewData);
         } catch (e: any) {
             console.error('预览失败:', e);
         } finally {

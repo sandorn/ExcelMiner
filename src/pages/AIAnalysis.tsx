@@ -94,6 +94,7 @@ export default function AIAnalysis() {
             const result = await invoke<AnalysisResult[]>('execute_analysis', {
                 project: updatedProject,
                 businessTypes: selectedTypes,
+                customPrompt: systemPrompt || null,
             });
             setResults(result);
             setAnalysisResults(result);

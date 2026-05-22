@@ -1,0 +1,39 @@
+# 子公司配置文件
+# 各业态子公司列表及源文件读取参数
+# 此文件独立于项目配置，定义全系统通用的公司信息
+
+# ---- 保险业态 (2家) ----
+# 数据源: 活动量/{公司名}.xlsx → Sheet "保险类"
+[[insurance]]
+name = "盛唐融信"
+
+[[insurance]]
+name = "君康经纪"
+
+# ---- 商写业态 (5家) ----
+# 数据源: 活动量/{公司名}.xlsx → Sheet "写字楼和商业综合体类"
+[[commercial]]
+name = "北京中言"
+
+[[commercial]]
+name = "大连凯丹"
+
+[[commercial]]
+name = "福建钱隆"
+
+[[commercial]]
+name = "春夏秋冬"
+
+[[commercial]]
+name = "重庆宜新"
+
+# ---- 酒店业态 (2家) ----
+# 数据源: 活动量/{公司名}.xlsx → Sheet "酒店类" + 经营报表/{公司名}.xlsx → Sheet "指标统计"
+# is_bhrt: 达成列偏移标志 — true=伯豪瑞廷(E列起始/2*m+3), false=重庆瑞尔(D列起始/2*m+2)
+[[hotel]]
+name = "伯豪瑞廷"
+is_bhrt = true
+
+[[hotel]]
+name = "重庆瑞尔"
+is_bhrt = false

@@ -3,6 +3,7 @@
 use std::process::Command;
 
 use tauri::State;
+use tauri_plugin_clipboard_manager::ClipboardExt;
 
 use crate::commands::project_cmd::AppState;
 use crate::error::AppError;
@@ -21,11 +22,14 @@ pub async fn export_report(
     let output_path = project.output_file.to_string_lossy().to_string();
     tracing::info!("导出报表到: {}", output_path);
 
-    // TODO: 从 state 中获取实际汇总数据
+    // 从 AppState 读取实际汇总和分析结果
+    let agg_results = state.aggregation_results.lock().await;
+    let ai_results = state.analysis_results.lock().await;
+
     ReportWriter::write_summary(
         &project.output_file,
-        &[],     // aggregation_results
-        &[],     // ai_results
+        &agg_results,
+        &ai_results,
         &project.name,
         project.year,
         project.month,
@@ -34,41 +38,16 @@ pub async fn export_report(
     Ok(output_path)
 }
 
-/// 复制文本到剪贴板（通过 PowerShell）
+/// 复制文本到剪贴板（使用 Tauri clipboard 插件，安全无注入风险）
 #[tauri::command]
-pub async fn copy_to_clipboard(text: String) -> Result<(), AppError> {
-    let output = if cfg!(target_os = "windows") {
-        Command::new("powershell")
-            .args(["-Command", &format!("Set-Clipboard -Value '{}'", text.replace('\'', "''"))])
-            .output()
-    } else if cfg!(target_os = "macos") {
-        Command::new("pbcopy")
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-            .and_then(|mut child| {
-                use std::io::Write;
-                child.stdin.as_mut().unwrap().write_all(text.as_bytes())?;
-                child.wait_with_output()
-            })
-    } else {
-        Command::new("xclip")
-            .args(["-selection", "clipboard"])
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-            .and_then(|mut child| {
-                use std::io::Write;
-                child.stdin.as_mut().unwrap().write_all(text.as_bytes())?;
-                child.wait_with_output()
-            })
-    };
-
-    match output {
-        Ok(_) => {
-            tracing::info!("已复制到剪贴板");
-            Ok(())
-        }
-        Err(e) => Err(AppError::Other(format!("剪贴板操作失败: {}", e))),
-    }
+pub async fn copy_to_clipboard(
+    app_handle: tauri::AppHandle,
+    text: String,
+) -> Result<(), AppError> {
+    app_handle
+        .clipboard()
+        .write_text(text)
+        .map_err(|e| AppError::Other(format!("剪贴板操作失败: {}", e)))
 }
 
 /// 在文件浏览器中打开文件夹

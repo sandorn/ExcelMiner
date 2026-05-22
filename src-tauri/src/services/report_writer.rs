@@ -21,7 +21,7 @@ impl ReportWriter {
         let nf = Format::new().set_num_format("#,##0.00");
 
         // Sheet 1: 填写页
-        let mut ws = workbook.add_worksheet();
+        let ws = workbook.add_worksheet();
         ws.set_name("填写页")?;
         ws.write(0, 0, "报告月份")?; ws.write_with_format(0, 1, month as f64, &nf)?;
         ws.write(1, 0, "报告年份")?; ws.write_with_format(1, 1, year as f64, &nf)?;
@@ -44,7 +44,7 @@ impl ReportWriter {
 
         // AI 分析结果 Sheet
         if !ai_results.is_empty() {
-            let mut ws = workbook.add_worksheet();
+            let ws = workbook.add_worksheet();
             ws.set_name("AI分析结果")?;
             ws.write(0, 0, "公司")?; ws.write(0, 1, "业态")?;
             ws.write(0, 2, "评分")?; ws.write(0, 3, "分析内容")?;

@@ -1,5 +1,6 @@
 //! 文本数字提取
 
+use std::sync::OnceLock;
 use regex::Regex;
 
 /// 从文本中提取数字，处理各种格式：
@@ -35,27 +36,35 @@ pub fn extract_number(text: &str) -> Option<f64> {
     cleaned.parse::<f64>().ok()
 }
 
+fn percent_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"([\d,]+\.?\d*)\s*%").unwrap())
+}
+
+fn expression_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^(\d+)\s*\+\s*(\d+)$").unwrap())
+}
+
+fn number_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(-?\d+\.?\d*)").unwrap())
+}
+
 /// 解析百分比: "85%" → 0.85
 fn parse_percent(text: &str) -> Option<f64> {
-    let re = Regex::new(r"([\d,]+\.?\d*)\s*%").ok()?;
-    if let Some(caps) = re.captures(text) {
-        let num_str = caps.get(1)?.as_str().replace(',', "");
-        if let Ok(num) = num_str.parse::<f64>() {
-            return Some(num / 100.0);
-        }
-    }
-    None
+    let caps = percent_regex().captures(text)?;
+    let num_str = caps.get(1)?.as_str().replace(',', "");
+    let num = num_str.parse::<f64>().ok()?;
+    Some(num / 100.0)
 }
 
 /// 处理 "a+b" 格式（a、b 为整数）: "1+1000" → 1001.0
 fn eval_expression(text: &str) -> Option<f64> {
-    let re = Regex::new(r"^(\d+)\s*\+\s*(\d+)$").ok()?;
-    if let Some(caps) = re.captures(text.trim()) {
-        let a = caps.get(1)?.as_str().parse::<f64>().ok()?;
-        let b = caps.get(2)?.as_str().parse::<f64>().ok()?;
-        return Some(a + b);
-    }
-    None
+    let caps = expression_regex().captures(text.trim())?;
+    let a = caps.get(1)?.as_str().parse::<f64>().ok()?;
+    let b = caps.get(2)?.as_str().parse::<f64>().ok()?;
+    Some(a + b)
 }
 
 /// 清理文本：去除货币符号、千分位逗号、中文等
@@ -71,11 +80,8 @@ fn clean_number_text(text: &str) -> String {
         .replace(',', "");
 
     // 提取连续的数字部分（含小数点）
-    let re = Regex::new(r"(-?\d+\.?\d*)").ok();
-    if let Some(re) = re {
-        if let Some(caps) = re.captures(&s) {
-            return caps.get(1).unwrap().as_str().to_string();
-        }
+    if let Some(caps) = number_regex().captures(&s) {
+        return caps.get(1).unwrap().as_str().to_string();
     }
 
     // 回退：直接过滤

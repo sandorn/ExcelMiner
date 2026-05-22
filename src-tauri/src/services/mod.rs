@@ -1,4 +1,5 @@
 pub mod ai_analyzer;
+pub mod company_registry;
 pub mod data_aggregator;
 pub mod excel_reader;
 pub mod number_parser;
