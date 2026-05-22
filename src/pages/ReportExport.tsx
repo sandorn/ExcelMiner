@@ -28,6 +28,16 @@ export default function ReportExport() {
 
     const [exporting, setExporting] = useState(false);
 
+    const handleOpenLog = async () => {
+        try {
+            const { invoke } = await import('@tauri-apps/api/core');
+            const path = await invoke<string>('open_log_folder');
+            message.success(`日志文件: ${path}`);
+        } catch (e: any) {
+            message.error(`打开日志失败: ${e}`);
+        }
+    };
+
     const handleExport = async () => {
         setExporting(true);
         try {
@@ -44,7 +54,10 @@ export default function ReportExport() {
     const handleCopyAll = async () => {
         const text = analysisResults
             .filter((r) => r.success)
-            .map((r) => `【${r.company_name} - ${r.business_type}】\n${r.content}`)
+            .map(
+                (r) =>
+                    `【${r.company_name} - ${r.business_type}】\n${r.content}`,
+            )
             .join('\n\n---\n\n');
 
         try {
@@ -210,6 +223,9 @@ export default function ReportExport() {
                     onClick={handleOpenFolder}
                 >
                     打开输出文件夹
+                </Button>
+                <Button icon={<FileTextOutlined />} onClick={handleOpenLog}>
+                    查看日志
                 </Button>
                 <Button
                     icon={<CopyOutlined />}

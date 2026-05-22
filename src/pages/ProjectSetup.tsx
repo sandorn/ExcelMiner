@@ -38,7 +38,15 @@ export default function ProjectSetup() {
     const setProject = useAppStore((s) => s.setProject);
     const [form] = Form.useForm();
     const [companies, setCompanies] = useState<Company[]>([
-        { name: '', business_type: 'Insurance', regions: [] },
+        { name: '北京中言', business_type: 'Commercial', regions: [] },
+        { name: '大连凯丹', business_type: 'Commercial', regions: [] },
+        { name: '福建钱隆', business_type: 'Commercial', regions: [] },
+        { name: '春夏秋冬', business_type: 'Commercial', regions: [] },
+        { name: '重庆宜新', business_type: 'Commercial', regions: [] },
+        { name: '伯豪瑞廷', business_type: 'Hotel', regions: [] },
+        { name: '重庆瑞尔', business_type: 'Hotel', regions: [] },
+        { name: '盛唐融信', business_type: 'Insurance', regions: [] },
+        { name: '君康经纪', business_type: 'Insurance', regions: [] },
     ]);
     const [saving, setSaving] = useState(false);
     const [loading, setLoading] = useState(false);
@@ -150,6 +158,7 @@ export default function ProjectSetup() {
                     <Form.Item
                         name="month"
                         label="分析月份"
+                        initialValue={dayjs()}
                         rules={[{ required: true, message: '请选择分析月份' }]}
                     >
                         <DatePicker

@@ -87,3 +87,20 @@ pub async fn open_in_explorer(path: String) -> Result<(), AppError> {
         Err(e) => Err(AppError::Other(format!("打开文件夹失败: {}", e))),
     }
 }
+
+/// 打开日志文件所在文件夹
+#[tauri::command]
+pub async fn open_log_folder() -> Result<String, AppError> {
+    let log_dir = dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("ExcelMiner")
+        .join("logs");
+    let log_file = log_dir.join("app.log");
+    let log_path = log_file.to_string_lossy().to_string();
+
+    if log_file.exists() {
+        Command::new("notepad").arg(&log_path).spawn()
+            .map_err(|e| AppError::Other(format!("打开日志失败: {}", e)))?;
+    }
+    Ok(log_path)
+}

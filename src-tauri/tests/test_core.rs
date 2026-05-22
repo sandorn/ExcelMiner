@@ -176,7 +176,7 @@ fn test_ai_config_defaults() {
 fn test_ai_analyzer_creation() {
     let config = AIConfig::default();
     let analyzer = AIAnalyzer::new(config).unwrap();
-    assert!(analyzer.load_system_prompt().is_ok());
+    assert!(analyzer.load_system_prompt(None).is_ok());
 }
 
 #[test]
@@ -184,9 +184,9 @@ fn test_ai_default_prompt() {
     let mut config = AIConfig::default();
     config.system_prompt_path = PathBuf::new(); // empty → use default
     let analyzer = AIAnalyzer::new(config).unwrap();
-    let prompt = analyzer.load_system_prompt().unwrap();
+    let prompt = analyzer.load_system_prompt(None).unwrap();
     assert!(!prompt.is_empty());
-    assert!(prompt.contains("财务分析师"));
+    assert!(prompt.contains("财务分析"));
 }
 
 #[test]
@@ -198,7 +198,7 @@ fn test_ai_prompt_from_file() {
     let mut config = AIConfig::default();
     config.system_prompt_path = prompt_path;
     let analyzer = AIAnalyzer::new(config).unwrap();
-    let prompt = analyzer.load_system_prompt().unwrap();
+    let prompt = analyzer.load_system_prompt(None).unwrap();
     assert_eq!(prompt, "自定义提示词内容");
 }
 

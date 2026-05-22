@@ -62,17 +62,15 @@ impl AIAnalyzer {
         Ok(Self { config, client })
     }
 
-    /// 加载系统提示词
-    pub fn load_system_prompt(&self) -> AppResult<String> {
-        if self.config.system_prompt_path.as_os_str().is_empty() {
-            return Ok(DEFAULT_SYSTEM_PROMPT.to_string());
+    /// 加载系统提示词（支持按业态自动匹配）
+    pub fn load_system_prompt(&self, business_type: Option<&BusinessType>) -> AppResult<String> {
+        // 1. 如果指定了路径，从文件加载
+        if !self.config.system_prompt_path.as_os_str().is_empty() {
+            return Ok(std::fs::read_to_string(&self.config.system_prompt_path)
+                .unwrap_or_else(|_| default_prompt_for(business_type)));
         }
-        let content = std::fs::read_to_string(&self.config.system_prompt_path)
-            .map_err(|e| AppError::Io(format!(
-                "无法读取提示词文件 {:?}: {}",
-                self.config.system_prompt_path, e
-            )))?;
-        Ok(content)
+        // 2. 按业态返回默认提示词
+        Ok(default_prompt_for(business_type))
     }
 
     /// 单次 API 调用
@@ -147,7 +145,7 @@ impl AIAnalyzer {
     where
         F: Fn(ProgressUpdate) + Send + Sync,
     {
-        let system_prompt = self.load_system_prompt()?;
+        let system_prompt = self.load_system_prompt(Some(&business_type))?;
         let total_companies = companies_data.len();
         let batch_size = self.config.batch_size.max(1);
         let mut results = Vec::new();
@@ -243,14 +241,82 @@ impl AIAnalyzer {
     /// 加载系统提示词（内部方法）
     fn _load_prompt(path: &std::path::Path) -> AppResult<String> {
         Ok(std::fs::read_to_string(path)
-            .unwrap_or_else(|_| DEFAULT_SYSTEM_PROMPT.to_string()))
+            .unwrap_or_else(|_| PROMPT_FINANCIAL.to_string()))
     }
 }
 
-pub const DEFAULT_SYSTEM_PROMPT: &str = r#"你是一位专业的财务分析师，擅长分析各业态子公司的经营数据。
-请根据提供的数据进行深入分析，包括但不限于：
-1. 与上月、去年同期的对比分析
-2. 各项指标的达成情况
-3. 存在的问题和风险提示
-4. 改进建议
-请以PPT半页文案的形式输出，语言精炼，要点突出。"#;
+pub const PROMPT_INSURANCE: &str = r#"# 角色
+严谨的保险中介经营数据分析师。
+
+# 任务
+基于提供的【两家保险中介子公司】经营数据（表格形式），输出一段客观、精简、可直接粘贴到PPT半页的分析。
+
+## 核心规则
+1. **摘要**（1-2句，≤40字）：概括两家公司最突出的业务特征差异。
+2. **分段描述**：必须按以下三个小标题顺序输出（每条≤50字）：
+   - `人力与活动：`
+   - `承保新单及效率：`
+   - `月度规模保费：`
+3. **内容要求**：只陈述数值差异，不做因果推断。禁止分析原因、提建议、使用主观情绪词。
+4. **缺失值处理**：#N/A或空白视为无数据，分析时跳过该月份，不提及。
+5. **输出格式**：第一行直接写摘要（无标签），然后每段以小标题开头，冒号后接描述，各段之间不空行。"#;
+
+pub const PROMPT_COMMERCIAL: &str = r#"# 角色
+严谨的商写租赁经营分析师。
+
+# 任务
+基于提供的【商写租赁类子公司】经营数据，输出一段客观、精简、可直接粘贴到PPT半页的分析。期初面积和月末面积不作为经营成果分析。
+
+## 核心规则
+1. **首条**（1-2句，≤40字）：概括所有公司中最突出的经营特征。不得提及期初面积、月末面积。
+2. **分段描述**：必须按以下四个小标题顺序输出（每条≤50字）：
+   - `整体情况：`
+   - `合作渠道：`
+   - `自有招商：`
+   - `续租情况：`
+3. **内容要求**：只做横向对比和客观列举。自动剔除全0指标。禁止分析原因、提建议。
+4. **输出格式**：第一行直接写摘要（无标签），然后每段以小标题开头，冒号后接描述，各段之间不空行。"#;
+
+pub const PROMPT_HOTEL: &str = r#"# 角色
+严谨的酒店经营数据分析师。
+
+# 任务
+基于提供的【两家酒店子公司】经营数据，输出一段客观、精简、可直接粘贴到PPT半页的分析。
+
+## 核心规则
+1. **摘要**（1-2句，≤40字）：概括两家酒店最突出的经营特征差异。
+2. **分段描述**：必须按以下三个小标题顺序输出（每条≤50字）：
+   - `营销活动：`
+   - `OTA评分：`
+   - `月均入住率：`
+3. **内容要求**：只陈述数值差异，不做因果推断。禁止分析原因、提建议、使用主观情绪词。
+4. **缺失值处理**：#N/A或空白视为无数据，分析时跳过该月份，不提及。
+5. **输出格式**：第一行直接写摘要（无标签），然后每段以小标题开头，冒号后接描述，各段之间不空行。"#;
+
+pub const PROMPT_FINANCIAL: &str = r#"## 角色
+严谨的高级财务分析师。
+
+## 任务
+基于给定的公司经营数据（单位：万元），生成一段精简、客观、可直接粘贴到PPT半页的分析。
+
+## 核心规则
+1. **序时进度**：以用户消息中提供的值为准，禁止自行计算或改动。
+2. **达成率对比**：达成率>序时进度→"领先X.X个百分点"，<→"落后X.X个百分点"。
+3. **环比趋势**：收入/现金流增→"环比上升"，利润类亏损收窄→"环比减亏"。
+4. **利润类目标为负**：按绝对值表述。
+5. **支出/成本类**：列示累计与达成率，内部判断"成本管控有效"或"刚性成本较高"。
+6. **波动性**：(max-min)/均值>30%→"波动大"。
+7. **绝对禁止**：主观情绪词、因果推断、改进建议。
+
+## 输出格式
+- 首行摘要≤50字，以"[年份]年前[月份]个月，[公司名称]"开头。
+- 后续每行一个指标（≤60字），包含累计数、达成率、环比趋势、波动性。"#;
+
+fn default_prompt_for(business_type: Option<&BusinessType>) -> String {
+    match business_type {
+        Some(BusinessType::Insurance) => PROMPT_INSURANCE.to_string(),
+        Some(BusinessType::Commercial) => PROMPT_COMMERCIAL.to_string(),
+        Some(BusinessType::Hotel) => PROMPT_HOTEL.to_string(),
+        _ => PROMPT_FINANCIAL.to_string(),
+    }
+}

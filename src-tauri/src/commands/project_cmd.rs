@@ -26,7 +26,6 @@ pub async fn create_project(
 ) -> Result<Project, AppError> {
     tracing::info!("创建项目: {} ({}年{}月)", name, year, month);
 
-    let config = state.config.lock().await;
     let project = Project {
         name,
         year,
@@ -45,15 +44,17 @@ pub async fn create_project(
         .map_err(|e| AppError::Config(e.to_string()))?;
     std::fs::write(&project_path, content)?;
 
-    // 更新最近项目
-    let mut config = state.config.lock().await;
-    let path_str = project_path.to_string_lossy().to_string();
-    config.general.recent_projects.retain(|p| p != &path_str);
-    config.general.recent_projects.insert(0, path_str);
-    if config.general.recent_projects.len() > 10 {
-        config.general.recent_projects.truncate(10);
+    // 更新最近项目（只锁一次）
+    {
+        let mut config = state.config.lock().await;
+        let path_str = project_path.to_string_lossy().to_string();
+        config.general.recent_projects.retain(|p| p != &path_str);
+        config.general.recent_projects.insert(0, path_str);
+        if config.general.recent_projects.len() > 10 {
+            config.general.recent_projects.truncate(10);
+        }
+        config.save()?;
     }
-    config.save()?;
 
     *state.current_project.lock().await = Some(project.clone());
 

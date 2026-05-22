@@ -8,17 +8,36 @@ pub mod utils;
 use tauri::Manager;
 use tracing_subscriber;
 
+use commands::project_cmd::AppState;
+use config::AppConfig;
+use tokio::sync::Mutex;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+
 /// 应用入口
 pub fn run() {
-    // 初始化日志
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "excelminer=info".into()),
-        )
+    // 日志文件路径: %APPDATA%/ExcelMiner/logs/app.log
+    let log_dir = dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("ExcelMiner")
+        .join("logs");
+    std::fs::create_dir_all(&log_dir).ok();
+
+    let file_appender = tracing_appender::rolling::daily(&log_dir, "app.log");
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+    // 泄漏 _guard 以保持日志写入（整个程序生命周期）
+    std::mem::forget(_guard);
+
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "excelminer=info".into());
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(tracing_subscriber::fmt::layer())          // 终端输出
+        .with(tracing_subscriber::fmt::layer().with_writer(non_blocking)) // 文件输出
         .init();
 
-    tracing::info!("ExcelMiner 启动中...");
+    tracing::info!("ExcelMiner 启动中... 日志文件: {}", log_dir.join("app.log").display());
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -26,6 +45,12 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
+            let config = AppConfig::load().unwrap_or_default();
+            let state = AppState {
+                config: Mutex::new(config),
+                current_project: Mutex::new(None),
+            };
+            app.manage(state);
             tracing::info!("ExcelMiner 初始化完成");
             Ok(())
         })
@@ -45,6 +70,7 @@ pub fn run() {
             commands::export_cmd::export_report,
             commands::export_cmd::copy_to_clipboard,
             commands::export_cmd::open_in_explorer,
+            commands::export_cmd::open_log_folder,
         ]);
 
     app.build(tauri::generate_context!())

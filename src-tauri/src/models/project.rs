@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 /// 业态类型
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "PascalCase")]
 pub enum BusinessType {
     Insurance,
     Hotel,
