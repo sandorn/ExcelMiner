@@ -22,7 +22,7 @@ import { listen } from '@tauri-apps/api/event';
 import { useAppStore } from '../stores/appStore';
 import type { PreviewData, AggregationResult } from '../types';
 
-const ENGINES = [
+const BUSINESS_ENGINES = [
     {
         key: 'insurance',
         label: '保险数据汇总',
@@ -41,24 +41,25 @@ const ENGINES = [
         desc: '招商面积、渠道、续签率',
         icon: '🟠',
     },
-    {
-        key: 'financial',
-        label: '经营报表汇总',
-        desc: '通用财报指标',
-        icon: '🟣',
-    },
 ];
+
+const FINANCIAL_ENGINE = {
+    key: 'financial',
+    label: '经营报表汇总',
+    desc: '通用财报指标（全部子公司）',
+    icon: '🟣',
+};
 
 export default function DataImport() {
     const project = useAppStore((s) => s.project);
     const setAggregationResults = useAppStore((s) => s.setAggregationResults);
 
-    const [selectedEngines, setSelectedEngines] = useState<string[]>([
+    const [selectedBusiness, setSelectedBusiness] = useState<string[]>([
         'insurance',
         'hotel',
         'commercial',
-        'financial',
     ]);
+    const [runFinancial, setRunFinancial] = useState(true);
     const [previewData, setPreviewData] = useState<Record<string, PreviewData>>(
         {},
     );
@@ -72,8 +73,10 @@ export default function DataImport() {
     const handlePreview = async () => {
         setPreviewing(true);
         try {
+            const engines = [...selectedBusiness];
+            if (runFinancial) engines.push('financial');
             const allPreviews = await Promise.all(
-                selectedEngines.map(async (engine) => {
+                engines.map(async (engine) => {
                     const data = await invoke<PreviewData>('preview_import', {
                         project: project,
                         engine: engine,
@@ -93,13 +96,11 @@ export default function DataImport() {
         }
     };
 
-    const handleExecute = async () => {
+    const doAggregate = async (engines: string[]) => {
         setRunning(true);
         setProgress(0);
         setDone(false);
-        setResults([]);
 
-        // 监听进度事件
         const unlisten = await listen<{
             step: string;
             progress: number;
@@ -110,15 +111,34 @@ export default function DataImport() {
         });
 
         try {
-            const result = await invoke<AggregationResult[]>(
+            const newResults = await invoke<AggregationResult[]>(
                 'execute_aggregation',
                 {
                     project: project,
-                    engines: selectedEngines,
+                    engines: engines,
                 },
             );
-            setResults(result);
-            setAggregationResults(result);
+            // merge: keep results from engines not in this run
+            const runKeys = new Set(engines);
+            const engineKeyToName: Record<string, string> = {
+                insurance: '保险数据汇总',
+                hotel: '酒店数据汇总',
+                commercial: '商写数据汇总',
+                financial: '经营报表汇总',
+            };
+            const runNames = new Set(
+                engines.map((e) => engineKeyToName[e] || ''),
+            );
+            setResults((prev) => [
+                ...prev.filter((r) => !runNames.has(r.engine_name)),
+                ...newResults,
+            ]);
+            // update global state with merged results
+            const merged = [
+                ...results.filter((r) => !runNames.has(r.engine_name)),
+                ...newResults,
+            ];
+            setAggregationResults(merged);
             setDone(true);
         } catch (e: any) {
             console.error('汇总失败:', e);
@@ -128,6 +148,9 @@ export default function DataImport() {
             setProgress(100);
         }
     };
+
+    const handleBusinessAgg = () => doAggregate(selectedBusiness);
+    const handleFinancialAgg = () => doAggregate(['financial']);
 
     if (!project) {
         return (
@@ -145,21 +168,21 @@ export default function DataImport() {
         <div className="page-container">
             <h2>📥 步骤二：数据汇总</h2>
 
-            <Card title="选择汇总引擎" size="small">
+            <Card title="步骤一：经营数据汇总" size="small">
                 <Checkbox.Group
-                    value={selectedEngines}
-                    onChange={(v) => setSelectedEngines(v as string[])}
+                    value={selectedBusiness}
+                    onChange={(v) => setSelectedBusiness(v as string[])}
                     style={{ width: '100%' }}
                 >
                     <Space direction="vertical" style={{ width: '100%' }}>
-                        {ENGINES.map((eng) => (
+                        {BUSINESS_ENGINES.map((eng) => (
                             <Card
                                 key={eng.key}
                                 size="small"
                                 className="engine-card"
                                 hoverable
                                 style={{
-                                    borderColor: selectedEngines.includes(
+                                    borderColor: selectedBusiness.includes(
                                         eng.key,
                                     )
                                         ? '#1677ff'
@@ -184,6 +207,47 @@ export default function DataImport() {
                         ))}
                     </Space>
                 </Checkbox.Group>
+                <Button
+                    type="primary"
+                    icon={
+                        running ? <LoadingOutlined /> : <PlayCircleOutlined />
+                    }
+                    onClick={handleBusinessAgg}
+                    loading={running}
+                    disabled={selectedBusiness.length === 0}
+                    block
+                    style={{ marginTop: 12, height: 40 }}
+                >
+                    执行经营数据汇总
+                </Button>
+            </Card>
+
+            <Card title="步骤二：经营报表汇总" size="small" style={{ marginTop: 16 }}>
+                <Checkbox
+                    checked={runFinancial}
+                    onChange={(e) => setRunFinancial(e.target.checked)}
+                >
+                    <Space>
+                        <span>{FINANCIAL_ENGINE.icon}</span>
+                        <strong>{FINANCIAL_ENGINE.label}</strong>
+                        <span style={{ color: '#888', fontSize: 13 }}>
+                            {FINANCIAL_ENGINE.desc}
+                        </span>
+                    </Space>
+                </Checkbox>
+                <Button
+                    type="primary"
+                    icon={
+                        running ? <LoadingOutlined /> : <PlayCircleOutlined />
+                    }
+                    onClick={handleFinancialAgg}
+                    loading={running}
+                    disabled={!runFinancial}
+                    block
+                    style={{ marginTop: 12, height: 40 }}
+                >
+                    执行经营报表汇总
+                </Button>
             </Card>
 
             <Space style={{ marginTop: 16 }}>
@@ -192,18 +256,7 @@ export default function DataImport() {
                     onClick={handlePreview}
                     loading={previewing}
                 >
-                    预览数据
-                </Button>
-                <Button
-                    type="primary"
-                    icon={
-                        running ? <LoadingOutlined /> : <PlayCircleOutlined />
-                    }
-                    onClick={handleExecute}
-                    loading={running}
-                    disabled={selectedEngines.length === 0}
-                >
-                    一键汇总
+                    预览全部数据
                 </Button>
             </Space>
 

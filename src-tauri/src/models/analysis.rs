@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 /// AI 分析结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnalysisResult {
-    /// 公司名称
+    /// 公司/板块名称
     pub company_name: String,
     /// 业态类型
     pub business_type: String,
@@ -21,6 +21,9 @@ pub struct AnalysisResult {
     /// 错误信息
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
+    /// 分析类别：segment=板块分析, company=公司经营指标分析
+    #[serde(default)]
+    pub analysis_category: String,
 }
 
 /// Token 用量统计

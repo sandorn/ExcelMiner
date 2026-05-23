@@ -24,7 +24,7 @@ pub async fn preview_import(
     engine.preview(&project)
 }
 
-/// 执行数据汇总
+/// 执行数据汇总（合并模式：仅替换同引擎的结果，保留其他引擎结果）
 #[tauri::command]
 pub async fn execute_aggregation(
     state: State<'_, AppState>,
@@ -32,10 +32,10 @@ pub async fn execute_aggregation(
     engines: Vec<String>,
     window: Window,
 ) -> Result<Vec<AggregationResult>, AppError> {
-    let mut results = Vec::new();
+    let mut new_results = Vec::new();
 
-    for (i, engine_name) in engines.iter().enumerate() {
-        let engine = get_engine(engine_name)?;
+    for (i, engine_key) in engines.iter().enumerate() {
+        let engine = get_engine(engine_key)?;
 
         let _ = window.emit("aggregation-progress", serde_json::json!({
             "step": format!("正在执行: {} ({}/{})", engine.name(), i + 1, engines.len()),
@@ -45,7 +45,7 @@ pub async fn execute_aggregation(
         }));
 
         let result = engine.execute(&project)?;
-        results.push(result);
+        new_results.push(result);
     }
 
     let _ = window.emit("aggregation-progress", serde_json::json!({
@@ -55,10 +55,18 @@ pub async fn execute_aggregation(
         "engine": null,
     }));
 
-    // 存储到 AppState 供后续步骤使用
-    *state.aggregation_results.lock().await = results.clone();
+    // 合并：保留未被本次运行覆盖的引擎结果
+    let run_engine_names: Vec<String> = engines
+        .iter()
+        .filter_map(|e| get_engine(e).ok())
+        .map(|eng| eng.name().to_string())
+        .collect();
 
-    Ok(results)
+    let mut stored = state.aggregation_results.lock().await;
+    stored.retain(|r| !run_engine_names.contains(&r.engine_name));
+    stored.extend(new_results.clone());
+
+    Ok(new_results)
 }
 
 fn get_engine(name: &str) -> Result<Box<dyn AggregationEngine>, AppError> {

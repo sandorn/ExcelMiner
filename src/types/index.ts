@@ -64,6 +64,8 @@ export interface AnalysisResult {
     token_usage?: TokenUsage;
     success: boolean;
     error_message?: string;
+    /** 分析类别：segment=板块分析, company=公司经营指标分析 */
+    analysis_category: string;
 }
 
 /** Token 用量 */

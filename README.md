@@ -4,16 +4,16 @@
 
 ## 技术栈
 
-| 层 | 技术 |
-|---|---|
-| 桌面壳 | Tauri v2（Rust） |
-| 前端 | React 18 + TypeScript + Ant Design 5 |
-| 状态管理 | Zustand 5 |
-| Excel 读取 | calamine 0.26 |
-| Excel 写入 | rust_xlsxwriter 0.80 |
-| HTTP 客户端 | reqwest 0.12（rustls-tls） |
-| AI 模型 | DeepSeek Chat API |
-| 构建产物 | `ExcelMiner-v0.1-portable/` 便携版 |
+| 层          | 技术                                 |
+| ----------- | ------------------------------------ |
+| 桌面壳      | Tauri v2（Rust）                     |
+| 前端        | React 18 + TypeScript + Ant Design 5 |
+| 状态管理    | Zustand 5                            |
+| Excel 读取  | calamine 0.26                        |
+| Excel 写入  | umya-spreadsheet 2.3                 |
+| HTTP 客户端 | reqwest 0.12（rustls-tls）           |
+| AI 模型     | DeepSeek Chat API                    |
+| 构建产物    | `ExcelMiner-v0.1-portable/` 便携版   |
 
 ## 快速开始
 
@@ -42,7 +42,7 @@ ExcelMiner/
 │   └── types/               # TypeScript 类型定义
 ├── src-tauri/               # Rust 后端
 │   ├── src/
-│   │   ├── commands/        # Tauri 命令（project/import/analysis/export，共13个）
+│   │   ├── commands/        # Tauri 命令（project/import/analysis/export，共15个）
 │   │   ├── models/          # 数据模型（project/company/indicator/analysis）
 │   │   ├── services/        # 业务逻辑（汇总引擎/AI分析/公司注册/Excel读写/报表写入）
 │   │   └── utils/           # 工具函数（日期解析/YTD计算）

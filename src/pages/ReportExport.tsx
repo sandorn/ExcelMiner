@@ -56,7 +56,9 @@ export default function ReportExport() {
             .filter((r) => r.success)
             .map(
                 (r) =>
-                    `【${r.company_name} - ${r.business_type}】\n${r.content}`,
+                    r.analysis_category === 'segment'
+                        ? `【${r.company_name} - 板块分析】\n${r.content}`
+                        : `【${r.company_name} - 经营指标分析】\n${r.content}`,
             )
             .join('\n\n---\n\n');
 
@@ -183,10 +185,15 @@ export default function ReportExport() {
                                                         : r.business_type ===
                                                             '酒店'
                                                           ? 'blue'
-                                                          : 'orange'
+                                                          : r.business_type ===
+                                                              '经营指标'
+                                                            ? 'purple'
+                                                            : 'orange'
                                                 }
                                             >
-                                                {r.business_type}
+                                                {r.analysis_category === 'segment'
+                                                    ? `${r.business_type}板块`
+                                                    : '经营指标'}
                                             </Tag>
                                             <span>{r.company_name}</span>
                                             <Tag>评分 {r.quality_score}/10</Tag>

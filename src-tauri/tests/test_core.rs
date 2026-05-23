@@ -72,7 +72,7 @@ fn test_quality_full_score() {
                    经营活动净现金流：累计 200 万元，年度达成率 55%。\n\
                    经营支出：累计 500 万元，年度达成率 40%，环比收窄，波动平稳，成本管控有效。";
 
-    let q = AnalysisQuality::from_content("公司A", content);
+    let q = AnalysisQuality::from_content("公司A", content, None);
     assert!(q.has_summary, "应该检测到摘要");
     assert!(q.has_revenue, "应该检测到营业收入");
     assert!(q.has_ebitda, "应该检测到EBITDA");  // "EBITDA"
@@ -86,7 +86,7 @@ fn test_quality_missing_items() {
     // 仅包含摘要和营业收入
     let content = "2024年前6个月，公司B收入领先。\n营业收入：累计 500 万元，达成率 50%。";
 
-    let q = AnalysisQuality::from_content("公司B", content);
+    let q = AnalysisQuality::from_content("公司B", content, None);
     assert!(q.has_summary);
     assert!(q.has_revenue);
     assert!(!q.has_ebitda);
@@ -97,7 +97,7 @@ fn test_quality_missing_items() {
 
 #[test]
 fn test_quality_empty_content() {
-    let q = AnalysisQuality::from_content("空公司", "");
+    let q = AnalysisQuality::from_content("空公司", "", None);
     assert!(!q.has_summary);
     assert_eq!(q.total_lines, 0);
     assert_eq!(q.score, 0);
@@ -108,7 +108,7 @@ fn test_quality_no_summary() {
     // 首行直接包含营业收入关键词 → 不算摘要
     let content = "营业收入：累计 500 万元，达成率 50%。";
 
-    let q = AnalysisQuality::from_content("公司C", content);
+    let q = AnalysisQuality::from_content("公司C", content, None);
     assert!(!q.has_summary, "首行含关键词不应算摘要");
 }
 
@@ -168,7 +168,7 @@ fn test_ai_config_defaults() {
     assert_eq!(config.temperature, 0.3);
     assert_eq!(config.max_tokens, 4096);
     assert_eq!(config.max_retries, 3);
-    assert_eq!(config.quality_threshold, 8);
+    assert_eq!(config.quality_threshold, 4);
     assert_eq!(config.batch_size, 3);
 }
 
@@ -209,7 +209,7 @@ fn test_quality_checker_threshold() {
 
     // 满分内容
     let content = "2024年收入领先。\n营业收入：1000万。\nEBITDA：200万。\n经营活动净现金流：300万。\n经营支出：500万。";
-    let result = checker.evaluate("测试公司", content);
+    let result = checker.evaluate("测试公司", content, None);
     assert_eq!(result.score, 10);
     assert!(result.passed);
     assert!(result.reason.is_none());
@@ -219,7 +219,7 @@ fn test_quality_checker_threshold() {
 fn test_quality_checker_low_score() {
     let checker = QualityChecker::new(8);
     let content = "只有营业收入：500万。";
-    let result = checker.evaluate("测试公司", content);
+    let result = checker.evaluate("测试公司", content, None);
     assert_eq!(result.score, 2); // 仅营收(2分)，首行含关键词故无摘要分
     assert!(!result.passed);
     assert!(result.reason.is_some());
@@ -237,7 +237,7 @@ fn test_quality_checker_empty() {
 
 #[test]
 fn test_quality_hint_generation() {
-    let q = AnalysisQuality::from_content("公司X", "仅营收：500万。");
+    let q = AnalysisQuality::from_content("公司X", "仅营收：500万。", None);
     let checker = QualityChecker::new(8);
     let hint = checker.quality_hint(&q);
     assert!(hint.contains("质量提示"));

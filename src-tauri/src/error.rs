@@ -52,8 +52,8 @@ impl From<toml::de::Error> for AppError {
     }
 }
 
-impl From<rust_xlsxwriter::XlsxError> for AppError {
-    fn from(e: rust_xlsxwriter::XlsxError) -> Self {
+impl From<umya_spreadsheet::XlsxError> for AppError {
+    fn from(e: umya_spreadsheet::XlsxError) -> Self {
         AppError::Other(format!("XlsxError: {}", e))
     }
 }

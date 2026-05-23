@@ -74,14 +74,17 @@ export default function ProjectSetup() {
             setSaving(true);
 
             const date = values.month as dayjs.Dayjs;
-            const projectName = `${date.year()}年${date.month()}月`;
+            const monthNum = date.month() + 1; // dayjs month() is 0-indexed
+            const projectName = `${date.year()}年${monthNum}月`;
+            // 使用数据文件夹同级的输出路径，斜杠风格与 dataFolder 保持一致
+            const sep = values.dataFolder.includes('\\') ? '\\' : '/';
 
             const project = await invoke<Project>('create_project', {
                 name: projectName,
                 year: date.year(),
-                month: date.month(),
+                month: monthNum,
                 dataFolder: values.dataFolder,
-                outputFile: `${values.outputFolder}/【${projectName}】经营数据.xlsx`,
+                outputFile: `${values.outputFolder}${sep}【${projectName}】经营数据.xlsx`,
             });
 
             // 更新项目中的公司列表

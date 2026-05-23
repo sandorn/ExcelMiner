@@ -8,7 +8,195 @@ use crate::models::analysis::{AnalysisResult, AggregationResult, ProgressUpdate,
 use crate::models::project::{BusinessType, Project};
 use crate::services::ai_analyzer::AIAnalyzer;
 
-/// 执行 AI 业态分析
+/// 阶段一：板块业态分析（跳过质量检查，仅检查内容长度≥50字）
+#[tauri::command]
+pub async fn execute_segment_analysis(
+    state: State<'_, AppState>,
+    project: Project,
+    business_types: Vec<String>,
+    custom_prompt: Option<String>,
+    window: Window,
+) -> Result<Vec<AnalysisResult>, AppError> {
+    if project.ai_config.api_key.is_empty() {
+        return Err(AppError::Config("请先配置 DeepSeek API Key".into()));
+    }
+
+    let mut ai_config = project.ai_config.clone();
+    if custom_prompt.is_some() {
+        ai_config.system_prompt_path = std::path::PathBuf::new();
+    }
+
+    let agg_results = state.aggregation_results.lock().await;
+
+    let analyzer = AIAnalyzer::new(ai_config)?;
+    let mut all_results = Vec::new();
+    let total_types = business_types.len();
+
+    for (type_idx, bt_name) in business_types.iter().enumerate() {
+        let bt = parse_business_type(bt_name)?;
+
+        let companies: Vec<_> = project
+            .companies
+            .iter()
+            .filter(|c| c.business_type == bt)
+            .collect();
+
+        if companies.is_empty() {
+            continue;
+        }
+
+        let segment_name = format!("{}板块", bt);
+        // ✅ 仅提取该业态引擎的汇总数据（不混入经营报表）
+        let engine_name = engine_name_for_business_type(&bt);
+        let agg_data_map = build_company_data_map_filtered(&agg_results, Some(engine_name));
+
+        // 合并所有公司数据
+        let combined_data: Vec<String> = companies
+            .iter()
+            .map(|c| {
+                let data_text = agg_data_map
+                    .get(&c.name)
+                    .cloned()
+                    .unwrap_or_else(|| format!("公司: {}\n（未找到汇总数据）", c.name));
+                format!("【{}】\n{}", c.name, data_text)
+            })
+            .collect();
+        let user_prompt = format!(
+            "请分析以下{}子公司的经营数据：\n\n{}",
+            bt,
+            combined_data.join("\n\n---\n\n")
+        );
+
+        let system_prompt = if let Some(ref p) = custom_prompt {
+            if !p.trim().is_empty() {
+                p.clone()
+            } else {
+                analyzer.load_system_prompt(Some(&bt))?
+            }
+        } else {
+            analyzer.load_system_prompt(Some(&bt))?
+        };
+
+        let _ = window.emit("analysis-progress", ProgressUpdate {
+            step: format!("板块分析: {} (第{}/{})", segment_name, type_idx + 1, total_types),
+            progress: (type_idx as f64) / (total_types as f64),
+            status: ProgressStatus::Running,
+            company: Some(segment_name.clone()),
+        });
+
+        let result = analyzer
+            .analyze_segment(
+                &system_prompt,
+                &user_prompt,
+                &segment_name,
+                &bt.to_string(),
+            )
+            .await;
+
+        if !result.success {
+            let _ = window.emit("analysis-progress", ProgressUpdate {
+                step: format!("{} 分析失败: {}", segment_name, result.error_message.as_deref().unwrap_or("未知错误")),
+                progress: (type_idx as f64) / (total_types as f64),
+                status: ProgressStatus::Error,
+                company: Some(segment_name),
+            });
+        }
+
+        all_results.push(result);
+    }
+
+    let _ = window.emit("analysis-progress", ProgressUpdate {
+        step: "板块分析完成".into(),
+        progress: 1.0,
+        status: ProgressStatus::Done,
+        company: None,
+    });
+
+    // 存储到 AppState（只保留 segment 类结果）
+    let mut stored = state.analysis_results.lock().await;
+    stored.retain(|r: &AnalysisResult| r.analysis_category != "segment");
+    stored.extend(all_results.clone());
+
+    Ok(all_results)
+}
+
+/// 阶段二：子公司经营指标分析（带质量检查）
+#[tauri::command]
+pub async fn execute_company_analysis(
+    state: State<'_, AppState>,
+    project: Project,
+    window: Window,
+) -> Result<Vec<AnalysisResult>, AppError> {
+    if project.ai_config.api_key.is_empty() {
+        return Err(AppError::Config("请先配置 DeepSeek API Key".into()));
+    }
+
+    let agg_results = state.aggregation_results.lock().await;
+    // ✅ 仅提取经营报表引擎的数据
+    let agg_data_map = build_company_data_map_filtered(&agg_results, Some("经营报表汇总"));
+
+    let analyzer = AIAnalyzer::new(project.ai_config.clone())?;
+    let financial_prompt = analyzer.load_system_prompt(None)?;
+    let mut all_results = Vec::new();
+    let total = project.companies.len();
+
+    for (i, company) in project.companies.iter().enumerate() {
+        let data_text = agg_data_map
+            .get(&company.name)
+            .cloned()
+            .unwrap_or_else(|| format!("公司: {}\n（未找到汇总数据）", company.name));
+
+        let user_prompt = format!(
+            "请分析以下公司的经营指标数据：\n\n【{}】\n{}",
+            company.name, data_text
+        );
+
+        let _ = window.emit("analysis-progress", ProgressUpdate {
+            step: format!("经营指标分析: {} (第{}/{})", company.name, i + 1, total),
+            progress: (i as f64) / (total as f64),
+            status: ProgressStatus::Running,
+            company: Some(company.name.clone()),
+        });
+
+        let result = analyzer
+            .analyze_single(
+                &financial_prompt,
+                &user_prompt,
+                &company.name,
+                "经营指标",
+                None,
+                "company",
+            )
+            .await;
+
+        if !result.success {
+            let _ = window.emit("analysis-progress", ProgressUpdate {
+                step: format!("{} 分析失败: {}", company.name, result.error_message.as_deref().unwrap_or("未知错误")),
+                progress: (i as f64) / (total as f64),
+                status: ProgressStatus::Error,
+                company: Some(company.name.clone()),
+            });
+        }
+
+        all_results.push(result);
+    }
+
+    let _ = window.emit("analysis-progress", ProgressUpdate {
+        step: "经营指标分析完成".into(),
+        progress: 1.0,
+        status: ProgressStatus::Done,
+        company: None,
+    });
+
+    // 存储到 AppState（合并已有 segment 结果 + 新的 company 结果）
+    let mut stored = state.analysis_results.lock().await;
+    stored.retain(|r: &AnalysisResult| r.analysis_category != "company");
+    stored.extend(all_results.clone());
+
+    Ok(all_results)
+}
+
+/// 执行 AI 业态分析（两阶段：板块分析 + 子公司经营指标分析）
 #[tauri::command]
 pub async fn execute_analysis(
     state: State<'_, AppState>,
@@ -26,13 +214,26 @@ pub async fn execute_analysis(
         ai_config.system_prompt_path = std::path::PathBuf::new();
     }
 
-    // 从状态中读取汇总数据，构建公司数据文本
+    // 从状态中读取汇总数据
     let agg_results = state.aggregation_results.lock().await;
-    let agg_data_map = build_company_data_map(&agg_results);
+    // 收集所有涉及的公司（去重）
+    let mut all_companies: Vec<&crate::models::project::Company> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
 
     let analyzer = AIAnalyzer::new(ai_config)?;
     let mut all_results = Vec::new();
+    let total_types = business_types.len();
+    let total_companies_count: usize = business_types.iter().map(|bt| {
+        let bt_enum = parse_business_type(bt).unwrap();
+        project.companies.iter().filter(|c| c.business_type == bt_enum).count()
+    }).sum();
+    // 总步骤 = 板块分析数 + 公司分析数
+    let total_steps = total_types + total_companies_count;
+    let mut step_idx = 0usize;
 
+    // ====================
+    // 阶段一：板块级分析（每个业态用专属提示词，仅用本业态汇总数据）
+    // ====================
     for bt_name in &business_types {
         let bt = parse_business_type(bt_name)?;
 
@@ -46,30 +247,123 @@ pub async fn execute_analysis(
             continue;
         }
 
-        // 为每个公司构建数据文本，优先从汇总结果取实际数据
-        let companies_data: Vec<(String, String)> = companies
+        // 记录公司（用于阶段二）
+        for c in &companies {
+            if seen.insert(c.name.clone()) {
+                all_companies.push(c);
+            }
+        }
+
+        let segment_name = format!("{}板块", bt);
+        // ✅ 仅提取该业态引擎的汇总数据
+        let engine_name = engine_name_for_business_type(&bt);
+        let agg_data_map = build_company_data_map_filtered(&agg_results, Some(engine_name));
+
+        // 合并所有公司数据
+        let combined_data: Vec<String> = companies
             .iter()
             .map(|c| {
                 let data_text = agg_data_map
                     .get(&c.name)
                     .cloned()
                     .unwrap_or_else(|| {
-                        format!(
-                            "公司: {}\n业态: {}\n（未找到汇总数据，请先执行步骤二）",
-                            c.name, bt
-                        )
+                        format!("公司: {}\n（未找到汇总数据）", c.name)
                     });
-                (c.name.clone(), data_text)
+                format!("【{}】\n{}", c.name, data_text)
             })
             .collect();
+        let user_prompt = format!(
+            "请分析以下{}子公司的经营数据：\n\n{}",
+            bt,
+            combined_data.join("\n\n---\n\n")
+        );
 
-        let results = analyzer
-            .analyze_batch(bt.clone(), &companies_data, custom_prompt.as_deref(), |update| {
-                let _ = window.emit("analysis-progress", &update);
-            })
-            .await?;
+        let system_prompt = if let Some(ref p) = custom_prompt {
+            if !p.trim().is_empty() {
+                p.clone()
+            } else {
+                analyzer.load_system_prompt(Some(&bt))?
+            }
+        } else {
+            analyzer.load_system_prompt(Some(&bt))?
+        };
 
-        all_results.extend(results);
+        step_idx += 1;
+        let _ = window.emit("analysis-progress", ProgressUpdate {
+            step: format!("板块分析: {} (第{}/{})", segment_name, step_idx, total_steps),
+            progress: step_idx as f64 / total_steps as f64,
+            status: ProgressStatus::Running,
+            company: Some(segment_name.clone()),
+        });
+
+        let result = analyzer
+            .analyze_segment(
+                &system_prompt,
+                &user_prompt,
+                &segment_name,
+                &bt.to_string(),
+            )
+            .await;
+
+        if !result.success {
+            let _ = window.emit("analysis-progress", ProgressUpdate {
+                step: format!("{} 分析失败: {}", segment_name, result.error_message.as_deref().unwrap_or("未知错误")),
+                progress: step_idx as f64 / total_steps as f64,
+                status: ProgressStatus::Error,
+                company: Some(segment_name),
+            });
+        }
+
+        all_results.push(result);
+    }
+
+    // ====================
+    // 阶段二：子公司经营指标分析（每家公司独立用财务分析师提示词，仅用经营报表数据）
+    // ====================
+    let financial_prompt = analyzer.load_system_prompt(None)?;
+    // ✅ 仅提取经营报表引擎的数据
+    let financial_data_map = build_company_data_map_filtered(&agg_results, Some("经营报表汇总"));
+
+    for company in &all_companies {
+        let data_text = financial_data_map
+            .get(&company.name)
+            .cloned()
+            .unwrap_or_else(|| format!("公司: {}\n（未找到汇总数据）", company.name));
+
+        let user_prompt = format!(
+            "请分析以下公司的经营指标数据：\n\n【{}】\n{}",
+            company.name, data_text
+        );
+
+        step_idx += 1;
+        let _ = window.emit("analysis-progress", ProgressUpdate {
+            step: format!("经营指标分析: {} (第{}/{})", company.name, step_idx, total_steps),
+            progress: step_idx as f64 / total_steps as f64,
+            status: ProgressStatus::Running,
+            company: Some(company.name.clone()),
+        });
+
+        let result = analyzer
+            .analyze_single(
+                &financial_prompt,
+                &user_prompt,
+                &company.name,
+                "经营指标",
+                None,
+                "company",
+            )
+            .await;
+
+        if !result.success {
+            let _ = window.emit("analysis-progress", ProgressUpdate {
+                step: format!("{} 分析失败: {}", company.name, result.error_message.as_deref().unwrap_or("未知错误")),
+                progress: step_idx as f64 / total_steps as f64,
+                status: ProgressStatus::Error,
+                company: Some(company.name.clone()),
+            });
+        }
+
+        all_results.push(result);
     }
 
     let _ = window.emit("analysis-progress", ProgressUpdate {
@@ -85,13 +379,22 @@ pub async fn execute_analysis(
     Ok(all_results)
 }
 
-/// 从汇总结果中提取按公司分组的数据文本
-fn build_company_data_map(
+/// 从汇总结果中提取按公司分组的数据文本（按引擎名称过滤）
+/// engine_name_filter: 仅提取匹配引擎的数据，None 表示不过滤
+fn build_company_data_map_filtered(
     agg_results: &[AggregationResult],
+    engine_name_filter: Option<&str>,
 ) -> std::collections::HashMap<String, String> {
     let mut map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
     for result in agg_results {
+        // 按引擎名称过滤
+        if let Some(filter) = engine_name_filter {
+            if result.engine_name != filter {
+                continue;
+            }
+        }
+
         if let Ok(companies) =
             serde_json::from_str::<Vec<serde_json::Value>>(&result.summary_data)
         {
@@ -102,7 +405,8 @@ fn build_company_data_map(
                     if let Some(obj) = co.as_object() {
                         for (k, v) in obj {
                             if k == "company" { continue; }
-                            entry.push_str(&format!("{}: {}\n", k, v));
+                            // 展平嵌套对象为可读的 key: value 格式，避免 JSON 大块输出
+                            flatten_value_to_prompt(entry, k, v, "");
                         }
                     }
                 }
@@ -111,6 +415,52 @@ fn build_company_data_map(
     }
 
     map
+}
+
+/// 递归展平 serde_json::Value 为可读的 prompt 文本行
+/// 对象展开为 key.subkey: value，数组仅在前10项内逐项列出
+fn flatten_value_to_prompt(out: &mut String, key: &str, v: &serde_json::Value, indent: &str) {
+    match v {
+        serde_json::Value::Object(map) => {
+            for (sub_key, sub_val) in map {
+                let full_key = format!("{}.{}", key, sub_key);
+                flatten_value_to_prompt(out, &full_key, sub_val, indent);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            if arr.len() <= 12 {
+                // 月度序列：紧凑一行
+                let vals: Vec<String> = arr.iter().map(|x| {
+                    if let Some(n) = x.as_f64() {
+                        if n.is_finite() { format!("{:.2}", n) } else { "#N/A".into() }
+                    } else { format!("{}", x) }
+                }).collect();
+                out.push_str(&format!("{}{}: [{}]\n", indent, key, vals.join(", ")));
+            }
+        }
+        serde_json::Value::Number(n) => {
+            if let Some(f) = n.as_f64() {
+                out.push_str(&format!("{}{}: {:.2}\n", indent, key, f));
+            } else {
+                out.push_str(&format!("{}{}: {}\n", indent, key, n));
+            }
+        }
+        serde_json::Value::String(s) => {
+            out.push_str(&format!("{}{}: {}\n", indent, key, s));
+        }
+        _ => {
+            out.push_str(&format!("{}{}: {}\n", indent, key, v));
+        }
+    }
+}
+
+/// 业态 → 引擎名称映射
+fn engine_name_for_business_type(bt: &BusinessType) -> &'static str {
+    match bt {
+        BusinessType::Insurance => "保险数据汇总",
+        BusinessType::Commercial => "商写数据汇总",
+        BusinessType::Hotel => "酒店数据汇总",
+    }
 }
 
 /// 测试 API 连接
@@ -140,4 +490,32 @@ fn parse_business_type(name: &str) -> Result<BusinessType, AppError> {
         "commercial" | "Commercial" | "商写" => Ok(BusinessType::Commercial),
         _ => Err(AppError::Other(format!("未知业态: {}", name))),
     }
+}
+
+/// 从 ~/.dskey 文件读取指定分组的 API Key
+#[tauri::command]
+pub fn read_dskey(section: &str) -> Result<Option<String>, AppError> {
+    let path = dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".dskey");
+
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(AppError::Io(e.to_string())),
+    };
+
+    let prefix = format!("{}=", section);
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if trimmed.starts_with(&prefix) {
+            let value = trimmed[prefix.len()..].trim().to_string();
+            return Ok(Some(value));
+        }
+    }
+
+    Ok(None)
 }

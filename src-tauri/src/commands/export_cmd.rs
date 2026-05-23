@@ -68,19 +68,27 @@ pub async fn open_in_explorer(path: String) -> Result<(), AppError> {
     }
 }
 
-/// 打开日志文件所在文件夹
+/// 打开日志文件所在文件夹（用文件浏览器定位）
 #[tauri::command]
 pub async fn open_log_folder() -> Result<String, AppError> {
     let log_dir = dirs::config_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("ExcelMiner")
         .join("logs");
-    let log_file = log_dir.join("app.log");
-    let log_path = log_file.to_string_lossy().to_string();
 
-    if log_file.exists() {
-        Command::new("notepad").arg(&log_path).spawn()
-            .map_err(|e| AppError::Other(format!("打开日志失败: {}", e)))?;
+    let log_path = log_dir.to_string_lossy().to_string();
+
+    // 在文件浏览器中打开日志目录
+    if cfg!(target_os = "windows") {
+        Command::new("explorer").arg(&log_path).spawn()
+            .map_err(|e| AppError::Other(format!("打开日志文件夹失败: {}", e)))?;
+    } else if cfg!(target_os = "macos") {
+        Command::new("open").arg(&log_path).spawn()
+            .map_err(|e| AppError::Other(format!("打开日志文件夹失败: {}", e)))?;
+    } else {
+        Command::new("xdg-open").arg(&log_path).spawn()
+            .map_err(|e| AppError::Other(format!("打开日志文件夹失败: {}", e)))?;
     }
+
     Ok(log_path)
 }

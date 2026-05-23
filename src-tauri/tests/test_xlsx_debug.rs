@@ -41,7 +41,7 @@ fn test_xlsx_roundtrip() {
     let mut reader = ExcelReader::open(&path).unwrap();
     let data = reader.read_sheet("Test").unwrap();
 
-    eprintln!("Headers: {:?}", &data.headers);
+    eprintln!("Dimensions: {:?}", &data.dimensions);
     eprintln!("Row count: {}", data.rows.len());
     for (i, row) in data.rows.iter().enumerate() {
         eprintln!("Row {}: {:?}", i + 1, row);

@@ -135,6 +135,96 @@ impl AIAnalyzer {
         Ok((content, usage))
     }
 
+    /// 板块级分析（跳过质量检查，仅重试 API 调用）
+    /// 用于业态板块汇总分析，不对输出做维度评分
+    pub async fn analyze_segment(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+        company_name: &str,
+        business_type_display: &str,
+    ) -> AnalysisResult {
+        tracing::info!(
+            "[板块分析] {}: system={}chars user={}chars",
+            company_name,
+            system_prompt.len(),
+            user_prompt.len()
+        );
+
+        let mut last_content = String::new();
+        let mut last_usage: Option<TokenUsage> = None;
+
+        for retry in 0..self.config.max_retries {
+            match self.call(system_prompt, user_prompt).await {
+                Ok((content, usage)) => {
+                    let trimmed = content.trim();
+                    if trimmed.len() >= 50 {
+                        tracing::info!("[板块分析] {} 完成(第{}次): {}字", company_name, retry + 1, trimmed.len());
+                        return AnalysisResult {
+                            company_name: company_name.to_string(),
+                            business_type: business_type_display.to_string(),
+                            content: trimmed.to_string(),
+                            quality_score: 0,
+                            retry_count: retry,
+                            token_usage: usage,
+                            success: true,
+                            error_message: None,
+                            analysis_category: "segment".to_string(),
+                        };
+                    }
+                    tracing::warn!(
+                        "[板块分析] {} 内容过短({}字) 重试{}/{}",
+                        company_name, trimmed.len(), retry + 1, self.config.max_retries
+                    );
+                    last_content = trimmed.to_string();
+                    last_usage = usage;
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "[板块分析] {} API失败({}) 重试{}/{}",
+                        company_name, e, retry + 1, self.config.max_retries
+                    );
+                    if retry == self.config.max_retries - 1 {
+                        let has_content = !last_content.is_empty();
+                        return AnalysisResult {
+                            company_name: company_name.to_string(),
+                            business_type: business_type_display.to_string(),
+                            content: last_content.clone(),
+                            quality_score: 0,
+                            retry_count: retry + 1,
+                            token_usage: last_usage,
+                            success: has_content,
+                            error_message: if has_content {
+                                None
+                            } else {
+                                Some(e.to_string())
+                            },
+                            analysis_category: "segment".to_string(),
+                        };
+                    }
+                }
+            }
+        }
+
+        // 重试耗尽
+        let has_content = !last_content.is_empty();
+        AnalysisResult {
+            company_name: company_name.to_string(),
+            business_type: business_type_display.to_string(),
+            content: last_content.clone(),
+            quality_score: 0,
+            retry_count: self.config.max_retries,
+            token_usage: last_usage,
+            success: has_content,
+            error_message: if has_content {
+                None
+            } else {
+                Some("[板块分析] 内容为空，重试已耗尽".to_string())
+            },
+            analysis_category: "segment".to_string(),
+        }
+    }
+
     /// 分批分析（带重试和质量检查）
     /// 每批将多个公司的数据合并到一次 API 调用中，由 batch_size 控制每批公司数
     pub async fn analyze_batch<F>(
@@ -213,6 +303,7 @@ impl AIAnalyzer {
                                     token_usage: usage.clone(),
                                     success: true,
                                     error_message: None,
+                                    analysis_category: String::new(),
                                 });
                             } else {
                                 tracing::warn!(
@@ -246,6 +337,7 @@ impl AIAnalyzer {
                                     token_usage: None,
                                     success: false,
                                     error_message: Some(e.to_string()),
+                                    analysis_category: String::new(),
                                 });
                             }
                         }
@@ -267,6 +359,7 @@ impl AIAnalyzer {
                             "质量评分均低于阈值 {}，已重试 {} 次",
                             self.config.quality_threshold, self.config.max_retries
                         )),
+                        analysis_category: String::new(),
                     });
                 }
             }
@@ -281,6 +374,140 @@ impl AIAnalyzer {
         });
 
         Ok(results)
+    }
+
+    /// 单次分析（带重试和质量检查），返回单个 AnalysisResult
+    /// 重试耗尽时保留最后一次内容并标注【质量不达标】
+    pub async fn analyze_single(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+        company_name: &str,
+        business_type_display: &str,
+        business_type_enum: Option<&BusinessType>,
+        analysis_category: &str,
+    ) -> AnalysisResult {
+        let checker = crate::services::quality_checker::QualityChecker::new(
+            self.config.quality_threshold,
+        );
+
+        // 记录经营分析输入数据
+        tracing::info!(
+            "[经营分析] {}: system={}chars user={}chars\n---user_prompt---\n{}\n---end---",
+            company_name,
+            system_prompt.len(),
+            user_prompt.len(),
+            user_prompt
+        );
+
+        let mut last_content = String::new();
+        let mut last_score = 0u32;
+        let mut last_usage: Option<TokenUsage> = None;
+
+        for retry in 0..self.config.max_retries {
+            match self.call(system_prompt, user_prompt).await {
+                Ok((content, usage)) => {
+                    let content_len = content.len();
+                    let qr = checker.evaluate(company_name, &content, business_type_enum);
+                    let score = qr.score;
+                    last_content = content;
+                    last_score = score;
+                    last_usage = usage.clone();
+
+                    tracing::info!(
+                        "[经营分析] {} (第{}次): 得分 {}/{} 内容{}字 摘要={} 营收={} ebitda={} 现金流={} 支出={}",
+                        company_name,
+                        retry + 1,
+                        score,
+                        self.config.quality_threshold,
+                        content_len,
+                        if qr.details.has_summary { "✓" } else { "✗" },
+                        if qr.details.has_revenue { "✓" } else { "✗" },
+                        if qr.details.has_ebitda { "✓" } else { "✗" },
+                        if qr.details.has_cashflow { "✓" } else { "✗" },
+                        if qr.details.has_expense { "✓" } else { "✗" },
+                    );
+
+                    if score >= self.config.quality_threshold {
+                        return AnalysisResult {
+                            company_name: company_name.to_string(),
+                            business_type: business_type_display.to_string(),
+                            content: last_content,
+                            quality_score: score,
+                            retry_count: retry,
+                            token_usage: last_usage,
+                            success: true,
+                            error_message: None,
+                            analysis_category: analysis_category.to_string(),
+                        };
+                    }
+
+                    tracing::warn!(
+                        "质量评分不足: {} (得分 {}/{})，重试 {}/{}",
+                        company_name, score, self.config.quality_threshold,
+                        retry + 1, self.config.max_retries
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "[经营分析] {} API失败({}) 重试{}/{}",
+                        company_name, e,
+                        retry + 1, self.config.max_retries
+                    );
+                    if retry == self.config.max_retries - 1 {
+                        return AnalysisResult {
+                            company_name: company_name.to_string(),
+                            business_type: business_type_display.to_string(),
+                            content: String::new(),
+                            quality_score: 0,
+                            retry_count: retry + 1,
+                            token_usage: None,
+                            success: false,
+                            error_message: Some(e.to_string()),
+                            analysis_category: analysis_category.to_string(),
+                        };
+                    }
+                }
+            }
+        }
+
+        // 所有重试耗尽 — 保留最后一次内容，标记质量不达标
+        if !last_content.is_empty() {
+            tracing::warn!(
+                "{} 重试耗尽，保留最后内容 (得分 {}/{})，标注质量不达标",
+                company_name, last_score, self.config.quality_threshold
+            );
+            let marked = format!(
+                "【质量不达标，评分 {}/{}】\n\n{}",
+                last_score, self.config.quality_threshold, last_content
+            );
+            AnalysisResult {
+                company_name: company_name.to_string(),
+                business_type: business_type_display.to_string(),
+                content: marked,
+                quality_score: last_score,
+                retry_count: self.config.max_retries,
+                token_usage: last_usage,
+                success: true,
+                error_message: None,
+                analysis_category: analysis_category.to_string(),
+            }
+        } else {
+            AnalysisResult {
+                company_name: company_name.to_string(),
+                business_type: business_type_display.to_string(),
+                content: String::new(),
+                quality_score: 0,
+                retry_count: self.config.max_retries,
+                token_usage: None,
+                success: false,
+                error_message: Some(format!(
+                    "质量评分均低于阈值 {}，已重试 {} 次",
+                    self.config.quality_threshold, self.config.max_retries
+                )),
+                analysis_category: analysis_category.to_string(),
+            }
+        }
     }
 
     /// 加载系统提示词（内部方法）
