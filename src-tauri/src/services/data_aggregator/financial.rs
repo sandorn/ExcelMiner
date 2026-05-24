@@ -74,29 +74,68 @@ impl AggregationEngine for FinancialAggregator {
             };
 
             // 提取 D4:O20 区域 (0-based: rows[3..20], cols[3..15])
-            let mut indicators = serde_json::Map::new();
+            // 同时读取 A列(标签) 和 B列(可能含年度目标)
+            let num_months = project.ytd_months.max(1).min(12) as usize;
+            let mut indicators: Vec<serde_json::Value> = Vec::new();
+            // 源数据 A 列是 section header（"经营指标""财务指标""业务指标"），
+            // 真正指标名需按 section 内位置映射
+            let mut section: String = String::new();
+            let mut idx: usize = 0;
             for (ri, row_data) in data.rows.iter().enumerate() {
-                if ri < 3 || ri >= 20 { continue; } // 只取 rows 4-20 (0-based 3-19)
-                let label = if ri < data.rows.len() && !row_data.is_empty() {
-                    row_data[0].clone()
-                } else {
-                    format!("Row{}", ri + 1)
+                if ri < 3 || ri >= 20 { continue; }
+                let raw_label = row_data.first().cloned().unwrap_or_default();
+                let raw_str: String = raw_label.trim().to_string();
+                let is_empty = raw_str.is_empty();
+                // 非空标签 = 新的 section header
+                if !is_empty {
+                    section = raw_str.clone();
+                    idx = 0;
+                }
+                // 按 section + 位置生成指标名
+                let label: String = match section.as_str() {
+                    "经营指标" => match idx {
+                        0 => "营业收入".into(),
+                        1 => "EBITDA".into(),
+                        2 => "经营活动净现金流".into(),
+                        _ => format!("经营指标_{}", idx),
+                    },
+                    "财务指标" => match idx {
+                        0 => "经营支出".into(),
+                        _ => format!("财务指标_{}", idx),
+                    },
+                    _ => {
+                        if is_empty { format!("{}_{}", section, idx) }
+                        else { raw_str }
+                    }
                 };
-                // 提取D-O列的值 (cols 3-14, 0-based)
+                idx += 1;
+                // 尝试读取 C 列（col 2, 0-based）作为年度目标
+                let annual_target: Option<f64> = if row_data.len() > 2 {
+                    extract_number(&row_data[2])
+                } else { None };
+                // D-O 列月度值 (cols 3..15, 0-based)
                 let vals: Vec<f64> = (3..15).map(|ci| {
                     if ci < row_data.len() {
                         extract_number(&row_data[ci]).unwrap_or(0.0)
                     } else { 0.0 }
                 }).collect();
-                indicators.insert(label, serde_json::Value::Array(
-                    vals.iter().map(|&v| serde_json::json!(v)).collect()
-                ));
+                // 计算 YTD 合计
+                let ytd: f64 = vals.iter().take(num_months).sum();
+                // 计算年度达成率
+                let rate: Option<f64> = annual_target.and_then(|t| {
+                    if t != 0.0 { Some(ytd / t * 100.0) } else { None }
+                });
+                indicators.push(serde_json::json!({
+                    "label": label,
+                    "target": annual_target,
+                    "ytd": ytd,
+                    "rate": rate,
+                    "values": vals,
+                }));
             }
 
             results.push(serde_json::json!({
                 "company": company.name,
-                "sheet": "指标统计",
-                "range": "D4:O20",
                 "indicators": indicators,
             }));
         }

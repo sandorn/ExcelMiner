@@ -13,7 +13,7 @@ Private Const OS_SYSTEM_PROMPT_CELL As String = "L1"
 
 ' ---- 保险业态配置 ----
 Private Const INS_SHEET_NAME As String = "保险类"
-Private Const INS_DATA_RANGE As String = "F2:H25"
+Private Const INS_DATA_RANGE As String = "F1:H25"
 Private Const INS_RESULT_CELL As String = "L14"
 Private Const INS_SYSTEM_PROMPT_CELL As String = "L1"
 

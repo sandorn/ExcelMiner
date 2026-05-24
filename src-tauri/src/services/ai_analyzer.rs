@@ -69,7 +69,25 @@ impl AIAnalyzer {
             return Ok(std::fs::read_to_string(&self.config.system_prompt_path)
                 .unwrap_or_else(|_| default_prompt_for(business_type)));
         }
-        // 2. 按业态返回默认提示词
+        // 2. 尝试从可执行目录 ../resources/prompts/ 加载（便携版兼容）
+        if let Some(bt) = business_type {
+            if let Ok(exe) = std::env::current_exe() {
+                if let Some(dir) = exe.parent() {
+                    let fname = match bt {
+                        BusinessType::Insurance => "保险分析.md",
+                        BusinessType::Commercial => "商写分析.md",
+                        BusinessType::Hotel => "酒店分析.md",
+                    };
+                    let path = dir.join("resources").join("prompts").join(fname);
+                    if path.exists() {
+                        if let Ok(content) = std::fs::read_to_string(&path) {
+                            return Ok(content);
+                        }
+                    }
+                }
+            }
+        }
+        // 3. 按业态返回内置默认提示词
         Ok(default_prompt_for(business_type))
     }
 

@@ -1,29 +1,29 @@
 /// 日期工具函数
 
 /// 从字符串解析月份
-/// 支持格式: "2024年6月", "2024-06", "202406"
+/// 支持格式: "2024年6月", "2024-06", "2024.06", "202406"
 pub fn parse_month(text: &str) -> Option<(u32, u32)> {
-    let re_year_month = regex::Regex::new(r"(\d{4})\s*年\s*(\d{1,2})\s*月").ok()?;
-    let re_dash = regex::Regex::new(r"(\d{4})-(\d{1,2})").ok()?;
-
     // "2024年6月"
-    if let Some(caps) = re_year_month.captures(text) {
-        let year: u32 = caps.get(1)?.as_str().parse().ok()?;
-        let month: u32 = caps.get(2)?.as_str().parse().ok()?;
-        if (1..=12).contains(&month) {
-            return Some((year, month));
-        }
+    let re = regex::Regex::new(r"(\d{4})\s*年\s*(\d{1,2})\s*月").ok()?;
+    if let Some(caps) = re.captures(text) {
+        let y: u32 = caps.get(1)?.as_str().parse().ok()?;
+        let m: u32 = caps.get(2)?.as_str().parse().ok()?;
+        if (1..=12).contains(&m) { return Some((y, m)); }
     }
-
-    // "2024-06"
-    if let Some(caps) = re_dash.captures(text) {
-        let year: u32 = caps.get(1)?.as_str().parse().ok()?;
-        let month: u32 = caps.get(2)?.as_str().parse().ok()?;
-        if (1..=12).contains(&month) {
-            return Some((year, month));
-        }
+    // "2024-06" or "2024.06"
+    let re2 = regex::Regex::new(r"(\d{4})[-.](\d{1,2})").ok()?;
+    if let Some(caps) = re2.captures(text) {
+        let y: u32 = caps.get(1)?.as_str().parse().ok()?;
+        let m: u32 = caps.get(2)?.as_str().parse().ok()?;
+        if (1..=12).contains(&m) { return Some((y, m)); }
     }
-
+    // "202406"
+    let re3 = regex::Regex::new(r"^(\d{4})(0[1-9]|1[0-2])$").ok()?;
+    if let Some(caps) = re3.captures(text.trim()) {
+        let y: u32 = caps.get(1)?.as_str().parse().ok()?;
+        let m: u32 = caps.get(2)?.as_str().parse().ok()?;
+        return Some((y, m));
+    }
     None
 }
 
