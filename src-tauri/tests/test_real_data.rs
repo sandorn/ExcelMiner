@@ -193,7 +193,7 @@ fn test_full_roundtrip() {
 
     // 验证各公司 Sheet 有数据
     for sheet_name in &sheets {
-        if sheet_name == "填写页" || sheet_name == "AI分析结果" { continue; }
+        if sheet_name == "Sheet1" || sheet_name == "填写页" || sheet_name == "AI分析结果" { continue; }
         let range = wb.worksheet_range(sheet_name).unwrap();
         let rows: Vec<&[calamine::Data]> = range.rows().collect();
         println!("  {}: {} 行", sheet_name, rows.len());

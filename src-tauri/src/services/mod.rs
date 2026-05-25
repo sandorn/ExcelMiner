@@ -5,3 +5,4 @@ pub mod excel_reader;
 pub mod number_parser;
 pub mod quality_checker;
 pub mod report_writer;
+pub mod xlsx_writer;

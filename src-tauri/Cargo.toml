@@ -33,7 +33,10 @@ calamine = "0.26"
 # Data processing (Phase 2: 添加 polars 做数据聚合)
 # polars = { version = "0.46", features = ["lazy", "fmt", "strings", "dtype-full"] }
 
-# Excel writing (modify existing files in-place)
+# Excel writing — 纯 Rust xlsx 写入（路线2: ZIP+XML 直接操作）
+zip = "2"
+quick-xml = "0.37"
+# 旧方案 — 逐步替换中
 umya-spreadsheet = "2.3"
 
 # Async runtime
@@ -62,7 +65,6 @@ tauri-build = { version = "2", features = [] }
 
 [dev-dependencies]
 tempfile = "3"
-zip = "2"
 
 [profile.release]
 strip = true

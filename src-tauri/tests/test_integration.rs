@@ -166,7 +166,6 @@ fn test_report_write_and_readback() {
     assert!(sheet_names.contains(&"测试公司".to_string()), "应有测试公司 Sheet");
     assert!(sheet_names.contains(&"AI分析结果".to_string()), "应有AI分析结果");
 
-    // 验证 填写页 A2(月份)
     let config = wb.worksheet_range("填写页").expect("填写页读取失败");
     let rows: Vec<&[calamine::Data]> = config.rows().collect();
     // A2 = (0,1) 0-based
