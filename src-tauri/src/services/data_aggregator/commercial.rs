@@ -1,7 +1,8 @@
 //! 商写数据汇总引擎
 //!
 //! 数据源: 活动量/ 文件夹下各商写子公司 .xlsx
-//! 源Sheet: "写字楼和商业综合体类"
+//! 源Sheet: "写字楼和商业综合体类"（VBA标准），兼容旧格式"商写类"
+//! 目标Sheet: "商写类"（输出文件）
 //! 公司列表从 resources/companies.toml 的 [commercial] 段读取
 //! 参考 VBA: 商写数据汇总.bas
 
@@ -45,7 +46,7 @@ impl AggregationEngine for CommercialAggregator {
         let total = registry.commercial.len();
         Ok(PreviewData {
             engine_name: self.name().into(), files_found: files,
-            sheets_detected: vec!["写字楼和商业综合体类".into()],
+            sheets_detected: vec!["写字楼和商业综合体类".into(), "商写类(兼容)".into()],
             companies_detected: registry.commercial.iter().map(|c| c.name.clone()).collect(),
             available_indicators: vec![
                 "期初面积".into(),"新增签约面积".into(),"退租面积".into(),
@@ -73,9 +74,13 @@ impl AggregationEngine for CommercialAggregator {
                     warnings.push(format!("{}: 打开失败 - {}", company_name, e)); continue;
                 }
             };
-            let data = match reader.read_sheet("写字楼和商业综合体类") {
-                Ok(d) => d, Err(e) => {
-                    warnings.push(format!("{}: 读取失败 - {}", company_name, e)); continue;
+            // 优先使用 VBA 中定义的正确名称，兼容旧格式（"商写类"）
+            let data = match reader.read_sheet("写字楼和商业综合体类")
+                .or_else(|_| reader.read_sheet("商写类"))
+            {
+                Ok(d) => d,
+                Err(_e) => {
+                    warnings.push(format!("{}: 读取失败 - Sheet '写字楼和商业综合体类' 或 '商写类' 未在文件 '{}' 中找到", company_name, path.display())); continue;
                 }
             };
 

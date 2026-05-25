@@ -55,40 +55,59 @@ pub struct AIAnalyzer {
 impl AIAnalyzer {
     pub fn new(config: AIConfig) -> AppResult<Self> {
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
+            .timeout(std::time::Duration::from_secs(60))
             .build()
             .map_err(|e| AppError::Other(e.to_string()))?;
 
         Ok(Self { config, client })
     }
 
-    /// 加载系统提示词（支持按业态自动匹配）
+    /// 加载系统提示词（始终从本地配置文件加载）
+    ///
+    /// 查找优先级：
+    /// 1. 用户指定的 system_prompt_path
+    /// 2. 可执行文件 ../resources/prompts/ （便携版路径）
+    /// 3. 工作目录 resources/prompts/ （开发模式路径）
+    /// 4. 最小兜底提示词（仅用于确保程序不崩溃）
     pub fn load_system_prompt(&self, business_type: Option<&BusinessType>) -> AppResult<String> {
-        // 1. 如果指定了路径，从文件加载
+        let fname = match business_type {
+            Some(BusinessType::Insurance) => "保险分析.md",
+            Some(BusinessType::Commercial) => "商写分析.md",
+            Some(BusinessType::Hotel) => "酒店分析.md",
+            None => "财务分析师.md",
+        };
+
+        // 1. 用户指定路径
         if !self.config.system_prompt_path.as_os_str().is_empty() {
-            return Ok(std::fs::read_to_string(&self.config.system_prompt_path)
-                .unwrap_or_else(|_| default_prompt_for(business_type)));
+            if let Ok(content) = std::fs::read_to_string(&self.config.system_prompt_path) {
+                return Ok(content);
+            }
+            tracing::warn!("用户指定提示词文件不存在: {:?}", self.config.system_prompt_path);
         }
-        // 2. 尝试从可执行目录 ../resources/prompts/ 加载（便携版兼容）
-        if let Some(bt) = business_type {
-            if let Ok(exe) = std::env::current_exe() {
-                if let Some(dir) = exe.parent() {
-                    let fname = match bt {
-                        BusinessType::Insurance => "保险分析.md",
-                        BusinessType::Commercial => "商写分析.md",
-                        BusinessType::Hotel => "酒店分析.md",
-                    };
-                    let path = dir.join("resources").join("prompts").join(fname);
-                    if path.exists() {
-                        if let Ok(content) = std::fs::read_to_string(&path) {
-                            return Ok(content);
-                        }
+
+        // 2. 可执行文件 ../resources/prompts/ （便携版路径）
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                let path = dir.join("resources").join("prompts").join(fname);
+                if path.exists() {
+                    if let Ok(content) = std::fs::read_to_string(&path) {
+                        return Ok(content);
                     }
                 }
             }
         }
-        // 3. 按业态返回内置默认提示词
-        Ok(default_prompt_for(business_type))
+
+        // 3. 工作目录 resources/prompts/ （开发模式路径）
+        let dev_path = std::path::Path::new("resources").join("prompts").join(fname);
+        if dev_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&dev_path) {
+                return Ok(content);
+            }
+        }
+
+        // 4. 最小兜底提示词
+        tracing::error!("无法加载提示词文件 '{}'，使用最小兜底提示词", fname);
+        Ok(FALLBACK_PROMPT.to_string())
     }
 
     /// 单次 API 调用
@@ -163,16 +182,23 @@ impl AIAnalyzer {
         business_type_display: &str,
     ) -> AnalysisResult {
         tracing::info!(
-            "[板块分析] {}: system={}chars user={}chars",
+            "[板块分析] {}: system={}chars user={}chars\n---user_prompt---\n{}\n---end---",
             company_name,
             system_prompt.len(),
-            user_prompt.len()
+            user_prompt.len(),
+            user_prompt
         );
 
         let mut last_content = String::new();
         let mut last_usage: Option<TokenUsage> = None;
 
         for retry in 0..self.config.max_retries {
+            // 指数退避: 2^retry × 1000ms (首次0ms, 然后1s, 2s, 4s...)
+            if retry > 0 {
+                let delay_ms = (1u64 << (retry - 1)) * 1000;
+                tracing::info!("[板块分析] {} 重试前等待 {}ms", company_name, delay_ms);
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            }
             match self.call(system_prompt, user_prompt).await {
                 Ok((content, usage)) => {
                     let trimmed = content.trim();
@@ -423,6 +449,12 @@ impl AIAnalyzer {
         let mut last_usage: Option<TokenUsage> = None;
 
         for retry in 0..self.config.max_retries {
+            // 指数退避: 2^retry × 1000ms (首次0ms, 然后1s, 2s, 4s...)
+            if retry > 0 {
+                let delay_ms = (1u64 << (retry - 1)) * 1000;
+                tracing::info!("[经营分析] {} 重试前等待 {}ms", company_name, delay_ms);
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            }
             match self.call(system_prompt, user_prompt).await {
                 Ok((content, usage)) => {
                     let content_len = content.len();
@@ -528,79 +560,10 @@ impl AIAnalyzer {
         }
     }
 
-    /// 加载系统提示词（内部方法）
-    fn _load_prompt(path: &std::path::Path) -> AppResult<String> {
-        Ok(std::fs::read_to_string(path)
-            .unwrap_or_else(|_| PROMPT_FINANCIAL.to_string()))
-    }
 }
 
-pub const PROMPT_INSURANCE: &str = r#"# 角色
-严谨的保险中介经营数据分析师。
-
-# 任务
-基于提供的【两家保险中介子公司】经营数据（表格形式），输出一段客观、精简、可直接粘贴到PPT半页的分析。
-
-## 核心规则
-1. **摘要**（1-2句，≤40字）：概括两家公司最突出的业务特征差异。
-2. **分段描述**：必须按以下三个小标题顺序输出（每条≤50字）：
-   - `人力与活动：`
-   - `承保新单及效率：`
-   - `月度规模保费：`
-3. **内容要求**：只陈述数值差异，不做因果推断。禁止分析原因、提建议、使用主观情绪词。
-4. **缺失值处理**：#N/A或空白视为无数据，分析时跳过该月份，不提及。
-5. **输出格式**：第一行直接写摘要（无标签），然后每段以小标题开头，冒号后接描述，各段之间不空行。"#;
-
-pub const PROMPT_COMMERCIAL: &str = r#"# 角色
-严谨的商写租赁经营分析师。
-
-# 任务
-基于提供的【商写租赁类子公司】经营数据，输出一段客观、精简、可直接粘贴到PPT半页的分析。期初面积和月末面积不作为经营成果分析。
-
-## 核心规则
-1. **首条**（1-2句，≤40字）：概括所有公司中最突出的经营特征。不得提及期初面积、月末面积。
-2. **分段描述**：必须按以下四个小标题顺序输出（每条≤50字）：
-   - `整体情况：`
-   - `合作渠道：`
-   - `自有招商：`
-   - `续租情况：`
-3. **内容要求**：只做横向对比和客观列举。自动剔除全0指标。禁止分析原因、提建议。
-4. **输出格式**：第一行直接写摘要（无标签），然后每段以小标题开头，冒号后接描述，各段之间不空行。"#;
-
-pub const PROMPT_HOTEL: &str = r#"# 角色
-严谨的酒店经营数据分析师。
-
-# 任务
-基于提供的【两家酒店子公司】经营数据，输出一段客观、精简、可直接粘贴到PPT半页的分析。
-
-## 核心规则
-1. **摘要**（1-2句，≤40字）：概括两家酒店最突出的经营特征差异。
-2. **分段描述**：必须按以下三个小标题顺序输出（每条≤50字）：
-   - `营销活动：`
-   - `OTA评分：`
-   - `月均入住率：`
-3. **内容要求**：只陈述数值差异，不做因果推断。禁止分析原因、提建议、使用主观情绪词。
-4. **缺失值处理**：#N/A或空白视为无数据，分析时跳过该月份，不提及。
-5. **输出格式**：第一行直接写摘要（无标签），然后每段以小标题开头，冒号后接描述，各段之间不空行。"#;
-
-pub const PROMPT_FINANCIAL: &str = r#"## 角色
-严谨的高级财务分析师。
-
-## 任务
-基于给定的公司经营数据（单位：万元），生成一段精简、客观、可直接粘贴到PPT半页的分析。
-
-## 核心规则
-1. **序时进度**：以用户消息中提供的值为准，禁止自行计算或改动。
-2. **达成率对比**：达成率>序时进度→"领先X.X个百分点"，<→"落后X.X个百分点"。
-3. **环比趋势**：收入/现金流增→"环比上升"，利润类亏损收窄→"环比减亏"。
-4. **利润类目标为负**：按绝对值表述。
-5. **支出/成本类**：列示累计与达成率，内部判断"成本管控有效"或"刚性成本较高"。
-6. **波动性**：(max-min)/均值>30%→"波动大"。
-7. **绝对禁止**：主观情绪词、因果推断、改进建议。
-
-## 输出格式
-- 首行摘要≤50字，以"[年份]年前[月份]个月，[公司名称]"开头。
-- 后续每行一个指标（≤60字），包含累计数、达成率、环比趋势、波动性。"#;
+/// 最小兜底提示词（仅在所有文件加载路径都失败时使用）
+const FALLBACK_PROMPT: &str = "你是严谨的财务分析师。基于给定经营数据输出客观精简的分析。";
 
 /// 从整批分析结果中提取单个公司的段落
 fn extract_company_section(content: &str, company_name: &str) -> Option<String> {
@@ -633,13 +596,4 @@ fn extract_company_section(content: &str, company_name: &str) -> Option<String> 
         .unwrap_or(lines.len());
 
     Some(lines[start..end].join("\n"))
-}
-
-fn default_prompt_for(business_type: Option<&BusinessType>) -> String {
-    match business_type {
-        Some(BusinessType::Insurance) => PROMPT_INSURANCE.to_string(),
-        Some(BusinessType::Commercial) => PROMPT_COMMERCIAL.to_string(),
-        Some(BusinessType::Hotel) => PROMPT_HOTEL.to_string(),
-        _ => PROMPT_FINANCIAL.to_string(),
-    }
 }

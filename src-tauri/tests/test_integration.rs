@@ -62,9 +62,9 @@ fn test_quality_all_present() {
         has_cashflow: true,
         has_expense: true,
         total_lines: 6,
-        score: 10, // 2+2+2+2+2
+        score: 8, // 4维度×2=8，摘要不计分
     };
-    assert_eq!(q.score, 10);
+    assert_eq!(q.score, 8);
     assert!(q.has_summary);
     assert!(q.has_revenue);
 }
@@ -79,9 +79,9 @@ fn test_quality_partial() {
         has_cashflow: true,
         has_expense: false,
         total_lines: 4,
-        score: 6, // 2+2+0+2+0
+        score: 4, // 2+0+2+0=4（摘要不计分）
     };
-    assert_eq!(q.score, 6);
+    assert_eq!(q.score, 4);
     assert!(!q.has_ebitda);
 }
 

@@ -57,7 +57,7 @@ npm run tauri build
 | `src-tauri/src/services/data_aggregator/hotel.rs`      | 酒店业态汇总引擎                                                                                    |
 | `src-tauri/src/services/data_aggregator/commercial.rs` | 商写业态汇总引擎                                                                                    |
 | `src-tauri/src/services/data_aggregator/financial.rs`  | 经营报表汇总引擎                                                                                    |
-| `src-tauri/src/services/ai_analyzer.rs`                | DeepSeek API 调用（120s超时）+ 分批重试 + 5维质量评分                                               |
+| `src-tauri/src/services/ai_analyzer.rs`                | DeepSeek API 调用（60s超时）+ 指数退避重试 + 提示词本地文件加载                                        |
 | `src-tauri/src/services/company_registry.rs`           | 从 companies.toml 加载公司模板                                                                      |
 | `src-tauri/src/services/excel_reader.rs`               | calamine 泛型封装 ExcelReader<RS>                                                                   |
 | `src-tauri/src/services/number_parser.rs`              | 文本→数字解析（千分位/百分号/金额前缀/表达式求值）                                                  |
@@ -66,10 +66,10 @@ npm run tauri build
 | `src-tauri/src/utils/date_utils.rs`                    | 日期解析（parse_month/parse_date_from_folder）+ YTD月份计算（ytd_months）                           |
 | `src-tauri/src/config.rs`                              | AppConfig/GeneralConfig/DefaultConfig（全局配置）                                                   |
 | `src-tauri/src/models/project.rs`                      | Project/Company/BusinessType/AIConfig                                                               |
-| `src-tauri/src/models/analysis.rs`                     | AnalysisResult/AnalysisQuality（5维度评分）/TokenUsage/ProgressUpdate/PreviewData/AggregationResult |
+| `src-tauri/src/models/analysis.rs`                     | AnalysisResult/AnalysisQuality（4维度评分，满分8分）/TokenUsage/ProgressUpdate/PreviewData/AggregationResult |
 | `src-tauri/src/models/indicator.rs`                    | IndicatorDef/IndicatorValue/IndicatorSet                                                            |
 | `resources/companies.toml`                             | 子公司预定义模板（9家公司3个业态）                                                                  |
-| `resources/prompts/*.md`                               | AI 系统提示词（保险分析/酒店分析/商写分析/财务分析师）                                              |
+| `resources/prompts/*.md`                               | AI 系统提示词（保险分析/酒店分析/商写分析/财务分析师），build.rs 自动同步到 src-tauri/resources/     |
 
 ## Tauri 命令清单（15个）
 
@@ -111,7 +111,7 @@ npm run tauri build
 
 分析流程分两阶段：
 1. **板块业态分析**（`analyze_segment`）— 按业态用专属提示词对板块整体进行分析，跳过质量检查，仅验证内容≥50字
-2. **子公司经营指标分析**（`analyze_single`）— 逐公司用财务分析师提示词独立分析，带5维度质量评分+自动重试
+2. **子公司经营指标分析**（`analyze_single`）— 逐公司用财务分析师提示词独立分析，带4维度质量评分+自动重试（摘要不计分）
 
 关键方法：
 - `analyze_segment(system_prompt, user_prompt, segment_name, business_type)` — 板块级分析（仅内容长度校验）
@@ -122,9 +122,11 @@ npm run tauri build
 - 板块分析仅使用**对应业态引擎**的汇总数据（保险/酒店/商写）
 - 公司分析仅使用**经营报表引擎**的汇总数据
 
-配置参数：batch_size=3、max_retries=3、quality_threshold=4（满分10）、temperature=0.3、max_tokens=4096、HTTP 超时 120s
-质量评分：5维度（summary/revenue/ebitda/cashflow/expense），每项2分，满分10分
-提示词加载策略：用户指定路径 → 按 business_type 返回内置默认 → 兜底通用财务分析师
+并发执行：公司分析阶段使用 `JoinSet` + `Semaphore(18)` 全并发，`Arc<AIAnalyzer>` 共享分析器实例，`Arc<AtomicUsize>` 追踪进度
+
+配置参数：batch_size=3、max_retries=2、quality_threshold=8（满分8）、temperature=0.3、max_tokens=1500、HTTP 超时 60s
+质量评分：4维度（revenue/ebitda/cashflow/expense），每项2分，满分8分。EBITDA维度支持 ebitda/GOP/扣非净利润 三选一
+提示词加载策略：用户指定路径 → 可执行文件 ../resources/prompts/ → 工作目录 resources/prompts/ → 最小兜底提示词
 
 ### 数字解析（NumberParser）
 
@@ -144,7 +146,7 @@ npm run tauri build
 
 ### 质量评分体系
 
-**AnalysisQuality**（`models/analysis.rs`）：5维度，每项2分，满分10分。默认维度为通用财务指标，各引擎可覆盖各维度的关键词集合。
+**AnalysisQuality**（`models/analysis.rs`）：4维度，每项2分，满分8分。摘要不计入评分。EBITDA维度含 ebitda/GOP/扣非净利润 三选一。
 
 **QualityChecker**（`services/quality_checker.rs`）：
 
@@ -177,7 +179,7 @@ npm run tauri build
 
 - 项目约定使用中文注释和文档
 - 所有路径使用 Windows 风格（`\`），跨平台命令需适配
-- 便携版构建产物在 `ExcelMiner-v0.1-portable/`
+- 便携版构建产物在 `release-portable/`
 - VBA 原型在 `业务原型/` 目录，仅作历史参考，不参与构建
 - `polars` 依赖已在 Cargo.toml 中注释预留，尚未启用
 - 详细架构设计请参考 `DESIGN.md`

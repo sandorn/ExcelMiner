@@ -86,8 +86,8 @@ pub struct AggregationResult {
     pub summary_data: String,
 }
 
-/// 分析质量评估（6维度评分，满分10分）
-/// 对应 VBA 核心指标分析.bas 中的 AnalysisQuality 类型
+/// 分析质量评估（4维度评分，满分8分）
+/// 摘要不计入评分维度，仅作为信息记录
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnalysisQuality {
     pub company_name: String,
@@ -95,7 +95,7 @@ pub struct AnalysisQuality {
     pub has_summary: bool,
     /// 是否包含营业收入指标
     pub has_revenue: bool,
-    /// 是否包含 EBITDA/扣非利润指标
+    /// 是否包含 EBITDA/GOP/扣非净利润指标（三选一即可）
     pub has_ebitda: bool,
     /// 是否包含经营活动净现金流指标
     pub has_cashflow: bool,
@@ -155,14 +155,13 @@ impl AnalysisQuality {
             ),
             None => (
                 content_lower.contains("营业收入"),
-                content_lower.contains("ebitda") || content_lower.contains("扣非利润"),
+                content_lower.contains("ebitda") || content_lower.contains("gop") || content_lower.contains("扣非净利润") || content_lower.contains("扣非利润"),
                 content_lower.contains("经营活动净现金流") || content_lower.contains("现金流"),
                 content_lower.contains("经营支出"),
             ),
         };
 
         let mut score = 0u32;
-        if has_summary { score += 2; }
         if d1 { score += 2; }
         if d2 { score += 2; }
         if d3 { score += 2; }

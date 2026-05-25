@@ -63,6 +63,8 @@ D:/TMP/mypy_cache/
 
 # Custom exclude paths
 old_code/
+src-tauri/resources/
+release-portable/
 
 # User-specific files
 *.rsuser

@@ -87,22 +87,22 @@ fn default_api_url() -> String {
     "https://api.deepseek.com/v1/chat/completions".into()
 }
 fn default_model() -> String {
-    "deepseek-chat".into()
+    "deepseek-v4-pro".into()
 }
 fn default_temperature() -> f64 {
     0.3
 }
 fn default_max_tokens() -> u32 {
-    4096
+    1500
 }
 fn default_batch_size() -> usize {
     3
 }
 fn default_max_retries() -> u32 {
-    3
+    2
 }
 fn default_quality_threshold() -> u32 {
-    4
+    8
 }
 
 impl Default for AIConfig {

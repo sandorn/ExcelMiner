@@ -61,7 +61,7 @@ fn test_extract_decimal() {
 }
 
 // ============================================================
-// AnalysisQuality 评分测试 (6维度)
+// AnalysisQuality 评分测试 (4维度，满分8分，摘要不计分)
 // ============================================================
 
 #[test]
@@ -78,7 +78,7 @@ fn test_quality_full_score() {
     assert!(q.has_ebitda, "应该检测到EBITDA");  // "EBITDA"
     assert!(q.has_cashflow, "应该检测到现金流");
     assert!(q.has_expense, "应该检测到经营支出");
-    assert_eq!(q.score, 10, "满分应为10");
+    assert_eq!(q.score, 8, "满分应为8（4维度×2，摘要不计分）");
 }
 
 #[test]
@@ -92,7 +92,7 @@ fn test_quality_missing_items() {
     assert!(!q.has_ebitda);
     assert!(!q.has_cashflow);
     assert!(!q.has_expense);
-    assert_eq!(q.score, 4, "仅摘要+营收各2分=4分");
+    assert_eq!(q.score, 2, "仅营收=2分（摘要不计分）");
 }
 
 #[test]
@@ -164,11 +164,11 @@ use std::path::PathBuf;
 #[test]
 fn test_ai_config_defaults() {
     let config = AIConfig::default();
-    assert_eq!(config.model, "deepseek-chat");
+    assert_eq!(config.model, "deepseek-v4-pro");
     assert_eq!(config.temperature, 0.3);
-    assert_eq!(config.max_tokens, 4096);
-    assert_eq!(config.max_retries, 3);
-    assert_eq!(config.quality_threshold, 4);
+    assert_eq!(config.max_tokens, 1500);
+    assert_eq!(config.max_retries, 2);
+    assert_eq!(config.quality_threshold, 8);
     assert_eq!(config.batch_size, 3);
 }
 
@@ -210,7 +210,7 @@ fn test_quality_checker_threshold() {
     // 满分内容
     let content = "2024年收入领先。\n营业收入：1000万。\nEBITDA：200万。\n经营活动净现金流：300万。\n经营支出：500万。";
     let result = checker.evaluate("测试公司", content, None);
-    assert_eq!(result.score, 10);
+    assert_eq!(result.score, 8);
     assert!(result.passed);
     assert!(result.reason.is_none());
 }

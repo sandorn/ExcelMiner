@@ -61,6 +61,7 @@ impl AggregationEngine for FinancialAggregator {
         // 按照 VBA: 逐公司打开经营报表→读取"指标统计"Sheet
         // 源范围 D4:O20(16行x12列) → 复制到目标 G2:R18
         for company in &project.companies {
+            let mut targets_missing_warned = false; // 每个公司只警告一次
             let path = folder.join(format!("{}.xlsx", company.name));
             let mut reader = match ExcelReader::open(&path) {
                 Ok(r) => r, Err(e) => {
@@ -74,8 +75,18 @@ impl AggregationEngine for FinancialAggregator {
             };
 
             // 提取 D4:O20 区域 (0-based: rows[3..20], cols[3..15])
-            // 同时读取 A列(标签) 和 B列(可能含年度目标)
+            // 同时读取 A列(标签) 和 C列(年度目标)
             let num_months = project.ytd_months.max(1).min(12) as usize;
+            // 保存原始 16行×12列 网格 (对应 VBA 纯值复制 D4:O20 → G2:R18)
+            let raw_grid: Vec<Vec<String>> = (3..20).map(|ri| {
+                if let Some(row_data) = data.rows.get(ri) {
+                    (3..15).map(|ci| {
+                        row_data.get(ci).cloned().unwrap_or_default().to_string()
+                    }).collect()
+                } else {
+                    vec!["".to_string(); 12]
+                }
+            }).collect();
             let mut indicators: Vec<serde_json::Value> = Vec::new();
             // 源数据 A 列是 section header（"经营指标""财务指标""业务指标"），
             // 真正指标名需按 section 内位置映射
@@ -113,6 +124,17 @@ impl AggregationEngine for FinancialAggregator {
                 let annual_target: Option<f64> = if row_data.len() > 2 {
                     extract_number(&row_data[2])
                 } else { None };
+                // C列有文本但无法解析为数字时发出警告（源数据模板可能用了指标名而非公式引用）
+                if annual_target.is_none() && !targets_missing_warned && row_data.len() > 2 {
+                    let c_val = row_data[2].trim().to_string();
+                    if !c_val.is_empty() {
+                        targets_missing_warned = true;
+                        warnings.push(format!(
+                            "{}: 年度目标列为文本(如\"{}\")，年度任务、达成率等将无法计算",
+                            company.name, c_val
+                        ));
+                    }
+                }
                 // D-O 列月度值 (cols 3..15, 0-based)
                 let vals: Vec<f64> = (3..15).map(|ci| {
                     if ci < row_data.len() {
@@ -137,6 +159,7 @@ impl AggregationEngine for FinancialAggregator {
             results.push(serde_json::json!({
                 "company": company.name,
                 "indicators": indicators,
+                "raw_grid": raw_grid,
             }));
         }
 

@@ -68,7 +68,7 @@ export default function AIAnalysis() {
                     project?.ai_config?.api_url ??
                     'https://api.deepseek.com/v1/chat/completions',
                 apiKey: apiKey,
-                model: project?.ai_config?.model ?? 'deepseek-chat',
+                model: project?.ai_config?.model ?? 'deepseek-v4-pro',
             });
             alert(`连接成功：${response}`);
         } catch (e: any) {

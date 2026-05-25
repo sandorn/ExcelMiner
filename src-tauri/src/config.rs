@@ -53,7 +53,7 @@ fn default_api_url() -> String {
     "https://api.deepseek.com/v1/chat/completions".into()
 }
 fn default_model() -> String {
-    "deepseek-chat".into()
+    "deepseek-v4-pro".into()
 }
 
 impl Default for AppConfig {

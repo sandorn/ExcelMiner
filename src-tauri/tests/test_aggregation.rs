@@ -93,7 +93,7 @@ fn test_commercial() {
     r[3][3]="5000".into();
     for m in 0..6 { r[4][2*m+3]="200".into(); r[6][2*m+3]="50".into(); r[8][2*m+3]="100".into(); r[9][2*m+3]="20".into(); r[10][2*m+3]="150".into(); r[13][2*m+3]="80".into(); r[14][2*m+3]="15".into(); r[15][2*m+3]="100".into(); r[18][2*m+3]="80".into(); r[19][2*m+3]="60".into(); }
     r[7][2*6+2]="5300".into();
-    for n in &["北京中言","大连凯丹","福建钱隆","春夏秋冬","重庆宜新"] { create_xlsx(&a.join(format!("{}.xlsx",n)),"写字楼和商业综合体类",&r); }
+    for n in &["北京中言","大连凯丹","福建钱隆","春夏秋冬","重庆宜新"] { create_xlsx(&a.join(format!("{}.xlsx",n)),"商写类",&r); }
     let res = CommercialAggregator.execute(&mkproj(t.path())).unwrap();
     assert_eq!(res.companies_processed,5);
     let cs:Vec<serde_json::Value>=serde_json::from_str(&res.summary_data).unwrap();

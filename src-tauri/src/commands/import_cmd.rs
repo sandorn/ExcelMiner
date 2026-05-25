@@ -13,6 +13,7 @@ use crate::services::data_aggregator::{
     commercial::CommercialAggregator,
     financial::FinancialAggregator,
 };
+use crate::services::report_writer::ReportWriter;
 
 /// 预览导入（扫描文件发现数据）
 #[tauri::command]
@@ -25,6 +26,7 @@ pub async fn preview_import(
 }
 
 /// 执行数据汇总（合并模式：仅替换同引擎的结果，保留其他引擎结果）
+/// 汇总完成后自动回写到输出文件，确保后续 AI 分析能读取到最新数据
 #[tauri::command]
 pub async fn execute_aggregation(
     state: State<'_, AppState>,
@@ -45,6 +47,16 @@ pub async fn execute_aggregation(
         }));
 
         let result = engine.execute(&project)?;
+        tracing::info!(
+            "[汇总] {}: 公司数={} 指标数={} 警告数={}",
+            engine.name(),
+            result.companies_processed,
+            result.indicators_collected,
+            result.warnings.len()
+        );
+        for w in &result.warnings {
+            tracing::warn!("[汇总] {} - {}", engine.name(), w);
+        }
         new_results.push(result);
     }
 
@@ -65,6 +77,27 @@ pub async fn execute_aggregation(
     let mut stored = state.aggregation_results.lock().await;
     stored.retain(|r| !run_engine_names.contains(&r.engine_name));
     stored.extend(new_results.clone());
+
+    // ✅ 回写到输出文件，确保后续板块分析和公司分析能从汇总表读取最新数据
+    let all_results = stored.clone();
+    drop(stored);
+    if !all_results.is_empty() {
+        match ReportWriter::write_summary(
+            &project.output_file,
+            &all_results,
+            &[], // 汇总阶段无 AI 结果
+            &project.name,
+            project.year,
+            project.month,
+        ) {
+            Ok(()) => {
+                tracing::info!("[汇总] 已回写到输出文件: {}", project.output_file.display());
+            }
+            Err(e) => {
+                tracing::error!("[汇总] 回写输出文件失败: {}", e);
+            }
+        }
+    }
 
     Ok(new_results)
 }

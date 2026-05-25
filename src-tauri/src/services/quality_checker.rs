@@ -1,7 +1,7 @@
-//! 分析质量检查（5维度评分阈值校验）
+//! 分析质量检查（4维度评分阈值校验）
 //!
-//! 对应 VBA 核心指标分析.bas 中的 CheckAnalysisQuality 函数
-//! 评分维度：摘要/营收/EBITDA/现金流/支出 各2分，满分10分
+//! 评分维度：营业收入/EBITDA(GOP/扣非)/现金流/支出 各2分，满分8分
+//! 摘要不计入评分维度
 
 use serde::{Deserialize, Serialize};
 
@@ -44,10 +44,9 @@ impl QualityChecker {
             passed: score >= self.threshold,
             reason: if score < self.threshold {
                 Some(format!(
-                    "评分 {} 低于阈值 {} (摘要:{}, 维度1:{}, 维度2:{}, 维度3:{}, 维度4:{})",
+                    "评分 {} 低于阈值 {} (营收:{}, EBITDA/GOP/扣非:{}, 现金流:{}, 支出:{})",
                     score,
                     self.threshold,
-                    if details.has_summary { "✓" } else { "✗" },
                     if details.has_revenue { "✓" } else { "✗" },
                     if details.has_ebitda { "✓" } else { "✗" },
                     if details.has_cashflow { "✓" } else { "✗" },
