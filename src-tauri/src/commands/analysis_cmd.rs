@@ -10,12 +10,6 @@ use tokio::task::JoinSet;
 use calamine::Reader;
 use crate::commands::project_cmd::AppState;
 
-/// 业态 Sheet 读取配置（与VBA原型范围对应，使用宽列范围适应不同模板版本）
-static SEGMENT_SHEET_CONFIGS: &[(&str, &str, (u32, u32, u32, u32))] = &[
-    ("Insurance", "保险类", (1, 25, 1, 13)),   // A1:M25
-    ("Hotel", "酒店类", (1, 13, 1, 13)),       // A1:M13
-    ("Commercial", "商写类", (1, 18, 1, 13)),  // A1:M18
-];
 use crate::error::{AppError};
 use crate::models::analysis::{AnalysisResult, AggregationResult, ProgressUpdate, ProgressStatus};
 use crate::models::project::{BusinessType, Project};
@@ -39,7 +33,11 @@ pub async fn execute_segment_analysis(
         ai_config.system_prompt_path = std::path::PathBuf::new();
     }
 
-    let agg_results = state.aggregation_results.lock().await;
+    // ✅ 提前获取汇总数据快照并在使用后立即释放锁，避免后续回写时死锁
+    let agg_results = {
+        let locked = state.aggregation_results.lock().await;
+        locked.clone()
+    }; // MutexGuard 在此释放
 
     let analyzer = AIAnalyzer::new(ai_config)?;
     let mut all_results = Vec::new();
@@ -60,13 +58,8 @@ pub async fn execute_segment_analysis(
 
         let segment_name = format!("{}板块", bt);
 
-        // ✅ 与VBA原型一致：从汇总表行业Sheet直接读取单元格数据
-        let cfg = SEGMENT_SHEET_CONFIGS.iter().find(|(b, _, _)| {
-            parse_business_type(b).ok().as_ref() == Some(&bt)
-        });
-        let user_data = cfg.and_then(|(_, sheet, range)| {
-            read_industry_segment_data(&project.output_file, sheet, *range, project.month)
-        });
+        // ✅ 与AardMiner/VBA原型一致：从汇总表行业Sheet直接读取单元格数据
+        let user_data = read_segment_data(&project.output_file, &bt, project.month);
 
         let user_prompt = if let Some(data) = user_data {
             format!(
@@ -133,6 +126,20 @@ pub async fn execute_segment_analysis(
         all_results.push(result);
     }
 
+    // 汇总分析结果
+    let success_count = all_results.iter().filter(|r| r.success).count();
+    let fail_count = all_results.len() - success_count;
+    tracing::info!(
+        "[板块分析] 完成: {}成功 {}失败",
+        success_count, fail_count
+    );
+    for r in &all_results {
+        tracing::info!(
+            "[板块分析] {}: success={} len={} err={:?}",
+            r.company_name, r.success, r.content.len(), r.error_message
+        );
+    }
+
     let _ = window.emit("analysis-progress", ProgressUpdate {
         step: "板块分析完成".into(),
         progress: 1.0,
@@ -141,9 +148,33 @@ pub async fn execute_segment_analysis(
     });
 
     // 存储到 AppState（只保留 segment 类结果）
-    let mut stored = state.analysis_results.lock().await;
-    stored.retain(|r: &AnalysisResult| r.analysis_category != "segment");
-    stored.extend(all_results.clone());
+    {
+        let mut stored = state.analysis_results.lock().await;
+        stored.retain(|r: &AnalysisResult| r.analysis_category != "segment");
+        stored.extend(all_results.clone());
+        tracing::info!("[板块分析] AppState 中 AI 结果共 {} 条 (segment: {})",
+            stored.len(),
+            stored.iter().filter(|r| r.analysis_category == "segment").count()
+        );
+    }
+
+    // 自动回写到模板：板块分析结果 → L14/M14
+    {
+        let agg = state.aggregation_results.lock().await;
+        let ai = state.analysis_results.lock().await;
+        tracing::info!(
+            "[板块分析] 回写模板: agg={}条 ai={}条 → {}",
+            agg.len(), ai.len(), project.output_file.display()
+        );
+        if let Err(e) = crate::services::report_writer::ReportWriter::write_summary(
+            &project.output_file, &agg, &ai,
+            &project.name, project.year, project.month,
+        ) {
+            tracing::error!("[板块分析] 回写模板失败: {}", e);
+        } else {
+            tracing::info!("[板块分析] ✅ 回写模板成功");
+        }
+    }
 
     Ok(all_results)
 }
@@ -159,9 +190,11 @@ pub async fn execute_company_analysis(
         return Err(AppError::Config("请先配置 DeepSeek API Key".into()));
     }
 
-    let agg_results = state.aggregation_results.lock().await;
-    // ✅ 优先从汇总表（output_file）读取数据，不存在时回退到内存汇总结果
-    let fallback_data_map = build_company_data_map_filtered(&agg_results, Some("经营报表汇总"));
+    // ✅ 提前获取汇总数据快照并在使用后立即释放锁，避免后续回写时死锁
+    let fallback_data_map = {
+        let agg_results = state.aggregation_results.lock().await;
+        build_company_data_map_filtered(&agg_results, Some("经营报表汇总"))
+    }; // MutexGuard 在此释放
 
     // 从汇总表模板读取各公司的 B 列指标名
     let indicator_names = read_indicator_names_from_template(&project.output_file)
@@ -249,6 +282,20 @@ pub async fn execute_company_analysis(
         }
     }
 
+    // 汇总分析结果
+    let success_count = all_results.iter().filter(|r| r.success).count();
+    let fail_count = all_results.len() - success_count;
+    tracing::info!(
+        "[经营分析] 完成: {}成功 {}失败",
+        success_count, fail_count
+    );
+    for r in &all_results {
+        tracing::info!(
+            "[经营分析] {}: success={} len={} score={} err={:?}",
+            r.company_name, r.success, r.content.len(), r.quality_score, r.error_message
+        );
+    }
+
     let _ = window.emit("analysis-progress", ProgressUpdate {
         step: "经营指标分析完成".into(),
         progress: 1.0,
@@ -257,9 +304,33 @@ pub async fn execute_company_analysis(
     });
 
     // 存储到 AppState（合并已有 segment 结果 + 新的 company 结果）
-    let mut stored = state.analysis_results.lock().await;
-    stored.retain(|r: &AnalysisResult| r.analysis_category != "company");
-    stored.extend(all_results.clone());
+    {
+        let mut stored = state.analysis_results.lock().await;
+        stored.retain(|r: &AnalysisResult| r.analysis_category != "company");
+        stored.extend(all_results.clone());
+        tracing::info!("[经营分析] AppState 中 AI 结果共 {} 条 (company: {})",
+            stored.len(),
+            stored.iter().filter(|r| r.analysis_category == "company").count()
+        );
+    }
+
+    // 自动回写到模板：公司分析结果 → 各公司 Sheet C61
+    {
+        let agg = state.aggregation_results.lock().await;
+        let ai = state.analysis_results.lock().await;
+        tracing::info!(
+            "[公司分析] 回写模板: agg={}条 ai={}条 → {}",
+            agg.len(), ai.len(), project.output_file.display()
+        );
+        if let Err(e) = crate::services::report_writer::ReportWriter::write_summary(
+            &project.output_file, &agg, &ai,
+            &project.name, project.year, project.month,
+        ) {
+            tracing::error!("[公司分析] 回写模板失败: {}", e);
+        } else {
+            tracing::info!("[公司分析] ✅ 回写模板成功");
+        }
+    }
 
     Ok(all_results)
 }
@@ -282,8 +353,11 @@ pub async fn execute_analysis(
         ai_config.system_prompt_path = std::path::PathBuf::new();
     }
 
-    // 从状态中读取汇总数据
-    let agg_results = state.aggregation_results.lock().await;
+    // ✅ 提前获取汇总数据快照并在使用后立即释放锁，避免后续回写时死锁
+    let agg_results = {
+        let locked = state.aggregation_results.lock().await;
+        locked.clone()
+    }; // MutexGuard 在此释放
     // 收集所有涉及的公司（去重）
     let mut all_companies: Vec<&crate::models::project::Company> = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -324,12 +398,8 @@ pub async fn execute_analysis(
 
         let segment_name = format!("{}板块", bt);
 
-        // ✅ 与VBA原型一致：从汇总表行业Sheet直接读取单元格数据
-        let user_data = SEGMENT_SHEET_CONFIGS.iter().find(|(b, _, _)| {
-            parse_business_type(b).ok().as_ref() == Some(&bt)
-        }).and_then(|(_, sheet, range)| {
-            read_industry_segment_data(&project.output_file, sheet, *range, project.month)
-        });
+        // ✅ 与AardMiner/VBA原型一致：从汇总表行业Sheet直接读取单元格数据
+        let user_data = read_segment_data(&project.output_file, &bt, project.month);
 
         let user_prompt = if let Some(data) = user_data {
             format!(
@@ -487,6 +557,23 @@ pub async fn execute_analysis(
         }
     }
 
+    // 汇总分析结果
+    let success_count = all_results.iter().filter(|r| r.success).count();
+    let fail_count = all_results.len() - success_count;
+    tracing::info!(
+        "[分析] 全部完成: segment={} company={} | {}成功 {}失败",
+        all_results.iter().filter(|r| r.analysis_category == "segment").count(),
+        all_results.iter().filter(|r| r.analysis_category == "company").count(),
+        success_count, fail_count
+    );
+    for r in &all_results {
+        tracing::info!(
+            "[分析] cat={} {}: success={} len={} score={} err={:?}",
+            r.analysis_category, r.company_name,
+            r.success, r.content.len(), r.quality_score, r.error_message
+        );
+    }
+
     let _ = window.emit("analysis-progress", ProgressUpdate {
         step: "全部分析完成".into(),
         progress: 1.0,
@@ -496,6 +583,24 @@ pub async fn execute_analysis(
 
     // 存储到 AppState 供导出步骤使用
     *state.analysis_results.lock().await = all_results.clone();
+
+    // 自动回写到模板：板块分析 → L14/M14 + 公司分析 → C61
+    {
+        let agg = state.aggregation_results.lock().await;
+        let ai = state.analysis_results.lock().await;
+        tracing::info!(
+            "[分析] 回写模板: agg={}条 ai={}条 → {}",
+            agg.len(), ai.len(), project.output_file.display()
+        );
+        if let Err(e) = crate::services::report_writer::ReportWriter::write_summary(
+            &project.output_file, &agg, &ai,
+            &project.name, project.year, project.month,
+        ) {
+            tracing::error!("[分析] 回写模板失败: {}", e);
+        } else {
+            tracing::info!("[分析] ✅ 回写模板成功");
+        }
+    }
 
     Ok(all_results)
 }
@@ -729,6 +834,41 @@ fn extract_number_financial(text: &str) -> f64 {
     crate::services::number_parser::extract_number(t).unwrap_or(0.0)
 }
 
+/// 按业态读取板块数据 — 与 AardMiner/VBA 原型精确一致
+/// 商写: A1:G18, 保险: F1:H25 (含规模保费月份过滤), 酒店: 三区域合并
+fn read_segment_data(
+    output_path: &std::path::Path,
+    bt: &BusinessType,
+    current_month: u32,
+) -> Option<String> {
+    match bt {
+        BusinessType::Commercial => {
+            read_industry_segment_data(output_path, "商写类", (1, 18, 1, 7), current_month)
+        }
+        BusinessType::Insurance => {
+            read_industry_segment_data(output_path, "保险类", (1, 25, 6, 8), current_month)
+        }
+        BusinessType::Hotel => {
+            read_hotel_segment_data(output_path, current_month)
+        }
+    }
+}
+
+/// 酒店业态三区域独立读取 (B1:D5 营销 / E1:G13 OTA / I1:K13 入住率)
+/// 与 AardMiner sector_analysis.aardio runHotel 完全一致
+fn read_hotel_segment_data(output_path: &std::path::Path, current_month: u32) -> Option<String> {
+    if !output_path.exists() { return None; }
+
+    let marketing = read_industry_segment_data(output_path, "酒店类", (1, 5, 2, 4), current_month)?;   // B1:D5
+    let ota = read_industry_segment_data(output_path, "酒店类", (1, 13, 5, 7), current_month)?;        // E1:G13
+    let occ = read_industry_segment_data(output_path, "酒店类", (1, 13, 9, 11), current_month)?;       // I1:K13
+
+    Some(format!(
+        "以下是两家酒店子公司的经营数据，包含三个独立区域：\n\n【区域一：营销活动】\n{}\n【区域二：OTA网络评价】\n{}\n【区域三：月均入住率】\n{}\n请根据系统提示词进行分析，并按指定输出格式给出分析结果。",
+        marketing, ota, occ
+    ))
+}
+
 /// 从汇总表读取业态板块 Sheet 数据，格式化为 AI prompt 文本
 /// 与 VBA 原型逻辑一致：直接读取输出文件中行业 Sheet 的单元格数据
 fn read_industry_segment_data(
@@ -805,8 +945,16 @@ fn read_industry_segment_data(
 
     if !has_data && out.len() < 50 { return None; }
 
-    // 日志输出取到的数据前500字符
-    let preview = if out.len() > 500 { &out[..500] } else { out.as_str() };
+    // 日志输出取到的数据前500字符（安全截断，对齐 UTF-8 字符边界）
+    let preview = if out.len() > 500 {
+        let end = out.char_indices()
+            .nth(500)
+            .map(|(i, _)| i)
+            .unwrap_or(out.len());
+        &out[..end]
+    } else {
+        out.as_str()
+    };
     tracing::info!(
         "[分析] 从汇总表 {}/{} 读取 {}rows, 数据预览:\n{}",
         sheet_name, format_range(r1,r2,c1,c2),

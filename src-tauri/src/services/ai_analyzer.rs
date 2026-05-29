@@ -74,7 +74,7 @@ impl AIAnalyzer {
             Some(BusinessType::Insurance) => "保险分析.md",
             Some(BusinessType::Commercial) => "商写分析.md",
             Some(BusinessType::Hotel) => "酒店分析.md",
-            None => "财务分析师.md",
+            None => "经营分析.md",
         };
 
         // 1. 用户指定路径
@@ -128,21 +128,40 @@ impl AIAnalyzer {
             max_tokens: self.config.max_tokens,
         };
 
+        let api_url = &self.config.api_url;
+        let api_key_preview = if self.config.api_key.len() > 8 {
+            format!("{}...{}", &self.config.api_key[..4], &self.config.api_key[self.config.api_key.len()-4..])
+        } else {
+            "***".to_string()
+        };
+        tracing::info!("[API] → POST {} | key={} | model={} | temp={} | max_tok={} | sys={}ch user={}ch",
+            api_url, api_key_preview, self.config.model, self.config.temperature,
+            self.config.max_tokens, system_prompt.len(), user_prompt.len());
+
+        let start = std::time::Instant::now();
         let response = self
             .client
-            .post(&self.config.api_url)
+            .post(api_url)
             .header("Authorization", format!("Bearer {}", self.config.api_key))
             .json(&request)
             .send()
             .await
-            .map_err(|e| AppError::ApiError {
-                retry: 0,
-                message: e.to_string(),
+            .map_err(|e| {
+                tracing::error!("[API] 网络错误({:.1}ms): {}", start.elapsed().as_secs_f64() * 1000.0, e);
+                AppError::ApiError {
+                    retry: 0,
+                    message: e.to_string(),
+                }
             })?;
 
-        if !response.status().is_success() {
-            let status = response.status();
+        let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+        let status = response.status();
+        tracing::info!("[API] ← HTTP {} ({:.0}ms)", status, elapsed_ms);
+
+        if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
+            let body_preview = if body.len() > 200 { &body[..200] } else { &body };
+            tracing::error!("[API] HTTP错误 {} body: {}", status, body_preview);
             return Err(AppError::ApiError {
                 retry: 0,
                 message: format!("HTTP {}: {}", status, body),
@@ -152,9 +171,12 @@ impl AIAnalyzer {
         let chat_response: ChatResponse = response
             .json()
             .await
-            .map_err(|e| AppError::ApiError {
-                retry: 0,
-                message: format!("JSON 解析失败: {}", e),
+            .map_err(|e| {
+                tracing::error!("[API] JSON解析失败({:.0}ms): {}", elapsed_ms, e);
+                AppError::ApiError {
+                    retry: 0,
+                    message: format!("JSON 解析失败: {}", e),
+                }
             })?;
 
         let content = chat_response
@@ -169,10 +191,18 @@ impl AIAnalyzer {
             total_tokens: u.total_tokens,
         });
 
+        let content_preview = if content.len() > 120 {
+            let end = content.char_indices().nth(120).map(|(i,_)| i).unwrap_or(content.len());
+            format!("{}...", &content[..end])
+        } else { content.clone() };
+        tracing::info!("[API] 响应: {}字 | tokens={:?} | preview={}",
+            content.len(), usage.as_ref().map(|u| (u.prompt_tokens, u.completion_tokens, u.total_tokens)),
+            content_preview);
+
         Ok((content, usage))
     }
 
-    /// 板块级分析（跳过质量检查，仅重试 API 调用）
+    /// 板块级分析（跳过质量检查，仅检查内容长度≥50字）
     /// 用于业态板块汇总分析，不对输出做维度评分
     pub async fn analyze_segment(
         &self,
@@ -182,11 +212,12 @@ impl AIAnalyzer {
         business_type_display: &str,
     ) -> AnalysisResult {
         tracing::info!(
-            "[板块分析] {}: system={}chars user={}chars\n---user_prompt---\n{}\n---end---",
-            company_name,
-            system_prompt.len(),
-            user_prompt.len(),
-            user_prompt
+            "[板块分析] {} START | sys={}chars user={}chars retries={}",
+            company_name, system_prompt.len(), user_prompt.len(), self.config.max_retries
+        );
+        tracing::debug!(
+            "[板块分析] {} user_prompt:\n{}\n---end---",
+            company_name, user_prompt
         );
 
         let mut last_content = String::new();
@@ -196,14 +227,15 @@ impl AIAnalyzer {
             // 指数退避: 2^retry × 1000ms (首次0ms, 然后1s, 2s, 4s...)
             if retry > 0 {
                 let delay_ms = (1u64 << (retry - 1)) * 1000;
-                tracing::info!("[板块分析] {} 重试前等待 {}ms", company_name, delay_ms);
+                tracing::info!("[板块分析] {} 重试{}/{} 等待{}ms", company_name, retry + 1, self.config.max_retries, delay_ms);
                 tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
             }
+            tracing::info!("[板块分析] {} 第{}次调用 API...", company_name, retry + 1);
             match self.call(system_prompt, user_prompt).await {
                 Ok((content, usage)) => {
                     let trimmed = content.trim();
                     if trimmed.len() >= 50 {
-                        tracing::info!("[板块分析] {} 完成(第{}次): {}字", company_name, retry + 1, trimmed.len());
+                        tracing::info!("[板块分析] {} ✅ 成功(第{}次): {}字", company_name, retry + 1, trimmed.len());
                         return AnalysisResult {
                             company_name: company_name.to_string(),
                             business_type: business_type_display.to_string(),
@@ -217,19 +249,26 @@ impl AIAnalyzer {
                         };
                     }
                     tracing::warn!(
-                        "[板块分析] {} 内容过短({}字) 重试{}/{}",
-                        company_name, trimmed.len(), retry + 1, self.config.max_retries
+                        "[板块分析] {} ⚠ 内容过短({}字, 需≥50) 重试{}/{} | 内容: {}",
+                        company_name, trimmed.len(), retry + 1, self.config.max_retries,
+                        if trimmed.is_empty() { "(空)" } else { trimmed }
                     );
                     last_content = trimmed.to_string();
                     last_usage = usage;
                 }
                 Err(e) => {
+                    let is_last = retry == self.config.max_retries - 1;
                     tracing::error!(
-                        "[板块分析] {} API失败({}) 重试{}/{}",
-                        company_name, e, retry + 1, self.config.max_retries
+                        "[板块分析] {} ❌ API失败({}) 重试{}/{} {}",
+                        company_name, e, retry + 1, self.config.max_retries,
+                        if is_last { "(最后机会)" } else { "" }
                     );
-                    if retry == self.config.max_retries - 1 {
+                    if is_last {
                         let has_content = !last_content.is_empty();
+                        tracing::warn!(
+                            "[板块分析] {} 重试耗尽: has_content={} last_len={}",
+                            company_name, has_content, last_content.len()
+                        );
                         return AnalysisResult {
                             company_name: company_name.to_string(),
                             business_type: business_type_display.to_string(),
@@ -252,6 +291,10 @@ impl AIAnalyzer {
 
         // 重试耗尽
         let has_content = !last_content.is_empty();
+        tracing::warn!(
+            "[板块分析] {} 全部重试耗尽: has_content={} last_len={}",
+            company_name, has_content, last_content.len()
+        );
         AnalysisResult {
             company_name: company_name.to_string(),
             business_type: business_type_display.to_string(),
@@ -435,13 +478,14 @@ impl AIAnalyzer {
             self.config.quality_threshold,
         );
 
-        // 记录经营分析输入数据
         tracing::info!(
-            "[经营分析] {}: system={}chars user={}chars\n---user_prompt---\n{}\n---end---",
-            company_name,
-            system_prompt.len(),
-            user_prompt.len(),
-            user_prompt
+            "[经营分析] {} START | sys={}ch user={}ch threshold={} retries={}",
+            company_name, system_prompt.len(), user_prompt.len(),
+            self.config.quality_threshold, self.config.max_retries
+        );
+        tracing::debug!(
+            "[经营分析] {} user_prompt:\n{}\n---end---",
+            company_name, user_prompt
         );
 
         let mut last_content = String::new();
@@ -449,12 +493,12 @@ impl AIAnalyzer {
         let mut last_usage: Option<TokenUsage> = None;
 
         for retry in 0..self.config.max_retries {
-            // 指数退避: 2^retry × 1000ms (首次0ms, 然后1s, 2s, 4s...)
             if retry > 0 {
                 let delay_ms = (1u64 << (retry - 1)) * 1000;
-                tracing::info!("[经营分析] {} 重试前等待 {}ms", company_name, delay_ms);
+                tracing::info!("[经营分析] {} 重试{}/{} 等待{}ms", company_name, retry + 1, self.config.max_retries, delay_ms);
                 tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
             }
+            tracing::info!("[经营分析] {} 第{}次调用 API...", company_name, retry + 1);
             match self.call(system_prompt, user_prompt).await {
                 Ok((content, usage)) => {
                     let content_len = content.len();
@@ -465,7 +509,7 @@ impl AIAnalyzer {
                     last_usage = usage.clone();
 
                     tracing::info!(
-                        "[经营分析] {} (第{}次): 得分 {}/{} 内容{}字 摘要={} 营收={} ebitda={} 现金流={} 支出={}",
+                        "[经营分析] {} (第{}次): 得分{}/{} | {}字 | 摘要{} 营收{} ebitda{} 现金流{} 支出{}",
                         company_name,
                         retry + 1,
                         score,
@@ -479,6 +523,7 @@ impl AIAnalyzer {
                     );
 
                     if score >= self.config.quality_threshold {
+                        tracing::info!("[经营分析] {} ✅ 达标(得分{}/{})", company_name, score, self.config.quality_threshold);
                         return AnalysisResult {
                             company_name: company_name.to_string(),
                             business_type: business_type_display.to_string(),
@@ -493,18 +538,21 @@ impl AIAnalyzer {
                     }
 
                     tracing::warn!(
-                        "质量评分不足: {} (得分 {}/{})，重试 {}/{}",
+                        "[经营分析] {} ⚠ 不达标(得分{}/{}) 重试{}/{}",
                         company_name, score, self.config.quality_threshold,
                         retry + 1, self.config.max_retries
                     );
                 }
                 Err(e) => {
+                    let is_last = retry == self.config.max_retries - 1;
                     tracing::error!(
-                        "[经营分析] {} API失败({}) 重试{}/{}",
+                        "[经营分析] {} ❌ API失败({}) 重试{}/{} {}",
                         company_name, e,
-                        retry + 1, self.config.max_retries
+                        retry + 1, self.config.max_retries,
+                        if is_last { "(最后机会)" } else { "" }
                     );
-                    if retry == self.config.max_retries - 1 {
+                    if is_last {
+                        tracing::warn!("[经营分析] {} 重试耗尽, 无内容", company_name);
                         return AnalysisResult {
                             company_name: company_name.to_string(),
                             business_type: business_type_display.to_string(),

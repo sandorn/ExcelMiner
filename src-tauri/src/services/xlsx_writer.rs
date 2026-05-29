@@ -28,6 +28,10 @@ pub struct XlsxWriter {
     entries: HashMap<String, Vec<u8>>,
     shared_strings: Vec<String>,
     sst_modified: bool,
+    /// sheet 名称 → XML 路径缓存 (如 "盛唐融信" → "xl/worksheets/sheet22.xml")
+    sheet_map: HashMap<String, String>,
+    /// 被修改过的 sheet XML 路径集合 (用于公式缓存清除)
+    dirty_sheets: std::collections::HashSet<String>,
 }
 
 impl XlsxWriter {
@@ -54,10 +58,11 @@ impl XlsxWriter {
         }
 
         let sst = Self::load_sst(&entries);
+        let sheet_map = Self::build_sheet_map(&entries);
+        tracing::info!("[xlsx_writer] 打开模板, sheet_map 包含 {} 个 sheet: {:?}", sheet_map.len(), sheet_map.keys().collect::<Vec<_>>());
         Ok(Self {
-            entries,
-            shared_strings: sst,
-            sst_modified: false,
+            entries, shared_strings: sst, sst_modified: false,
+            sheet_map, dirty_sheets: std::collections::HashSet::new(),
         })
     }
 
@@ -149,16 +154,16 @@ impl XlsxWriter {
                 .into(),
         );
 
+        let sheet_map = Self::build_sheet_map(&entries);
         Self {
-            entries,
-            shared_strings,
-            sst_modified: false,
+            entries, shared_strings, sst_modified: false,
+            sheet_map, dirty_sheets: std::collections::HashSet::new(),
         }
     }
 
     /// 确保目标 Sheet 存在（不存在则创建）
     pub fn ensure_sheet(&mut self, name: &str) -> Result<(), AppError> {
-        let sheet_path = Self::find_sheet_path(&self.entries, name);
+        let sheet_path = self.find_sheet_path( name);
         if sheet_path.is_some() {
             return Ok(());
         }
@@ -168,6 +173,7 @@ impl XlsxWriter {
         let r_id = format!("rId{}", 100 + new_id);
         let fname = format!("worksheets/sheet{}.xml", new_id);
         let path = format!("xl/{}", fname);
+        let path_key = path.clone();
 
         self.entries.insert(
             path,
@@ -186,13 +192,15 @@ impl XlsxWriter {
         Self::patch_workbook_rels(&mut self.entries, &r_id, &fname);
         // 更新 [Content_Types].xml — 添加 worksheet 类型
         Self::patch_content_types(&mut self.entries, &format!("/xl/{}", fname));
+        // 更新 sheet_map 缓存
+        self.sheet_map.insert(name.to_string(), path_key);
 
         Ok(())
     }
 
     /// 设置单元格数值
     pub fn set_number(&mut self, sheet: &str, col: u32, row: u32, value: f64) -> Result<(), AppError> {
-        let path = Self::find_sheet_path(&self.entries, sheet)
+        let path = self.find_sheet_path( sheet)
             .ok_or_else(|| AppError::SheetNotFound {
                 file: "xlsx".into(),
                 sheet: sheet.to_string(),
@@ -200,6 +208,7 @@ impl XlsxWriter {
         let xml = self.entries.get(&path).cloned().unwrap_or_default();
         let modified = modify_cell_number(&xml, col, row, value)
             .map_err(|e| AppError::Other(format!("修改单元格 {}{}: {}", col_letter(col), row, e)))?;
+        self.dirty_sheets.insert(path.clone());
         self.entries.insert(path, modified);
         Ok(())
     }
@@ -209,7 +218,7 @@ impl XlsxWriter {
         if text.is_empty() {
             return Ok(());
         }
-        let path = Self::find_sheet_path(&self.entries, sheet)
+        let path = self.find_sheet_path( sheet)
             .ok_or_else(|| AppError::SheetNotFound {
                 file: "xlsx".into(),
                 sheet: sheet.to_string(),
@@ -224,7 +233,7 @@ impl XlsxWriter {
 
     /// 设置单元格公式
     pub fn set_formula(&mut self, sheet: &str, col: u32, row: u32, formula: &str) -> Result<(), AppError> {
-        let path = Self::find_sheet_path(&self.entries, sheet)
+        let path = self.find_sheet_path( sheet)
             .ok_or_else(|| AppError::SheetNotFound {
                 file: "xlsx".into(),
                 sheet: sheet.to_string(),
@@ -246,7 +255,7 @@ impl XlsxWriter {
         row_end: u32,
         format_code: &str,
     ) -> Result<(), AppError> {
-        let path = Self::find_sheet_path(&self.entries, sheet)
+        let path = self.find_sheet_path( sheet)
             .ok_or_else(|| AppError::SheetNotFound {
                 file: "xlsx".into(),
                 sheet: sheet.to_string(),
@@ -308,39 +317,70 @@ impl XlsxWriter {
         }
     }
 
-    /// 在 ZIP entries 中查找 Sheet 的路径
-    fn find_sheet_path(entries: &HashMap<String, Vec<u8>>, name: &str) -> Option<String> {
-        // 先通过 workbook.xml 查找 sheetId → 路径 映射
-        if let Some(xml) = entries.get("xl/workbook.xml") {
-            let s = String::from_utf8_lossy(xml);
-            for line in s.lines() {
-                if line.contains(&format!("name=\"{}\"", name)) {
-                    if let Some(start) = line.find("r:id=\"") {
-                        let rest = &line[start + 6..];
-                        if let Some(end) = rest.find('\"') {
-                            let r_id = &rest[..end];
-                            // 通过 _rels 查找路径
-                            if let Some(rels) = entries.get("xl/_rels/workbook.xml.rels") {
-                                let rs = String::from_utf8_lossy(rels);
-                                let needle = format!("Id=\"{}\"", r_id);
-                                for rline in rs.lines() {
-                                    if rline.contains(&needle) {
-                                        if let Some(ts) = rline.find("Target=\"") {
-                                            let target = &rline[ts + 8..];
-                                            if let Some(te) = target.find('\"') {
-                                                return Some(format!("xl/{}", &target[..te]));
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+    /// 预构建 sheet 名称 → XML 路径的映射
+    fn build_sheet_map(entries: &HashMap<String, Vec<u8>>) -> HashMap<String, String> {
+        let mut map = HashMap::new();
+        let wb_xml = match entries.get("xl/workbook.xml") {
+            Some(b) => String::from_utf8_lossy(b).into_owned(),
+            None => return map,
+        };
+        let rels_xml = match entries.get("xl/_rels/workbook.xml.rels") {
+            Some(b) => String::from_utf8_lossy(b).into_owned(),
+            None => return map,
+        };
+
+        // 提取每个 sheet: name="X" → r:id="Y"
+        let mut sheet_rids: Vec<(String, String)> = Vec::new();
+        let mut search = 0;
+        while let Some(tag_start) = wb_xml[search..].find("<sheet ") {
+            let abs_start = search + tag_start;
+            let tag_end = match wb_xml[abs_start..].find("/>") {
+                Some(p) => abs_start + p + 2,
+                None => break,
+            };
+            let tag = &wb_xml[abs_start..tag_end];
+
+            let name = extract_attr(tag, "name");
+            let rid = extract_attr(tag, "r:id");
+
+            if let (Some(n), Some(r)) = (name, rid) {
+                sheet_rids.push((n, r));
+            }
+            search = tag_end;
+        }
+
+        // 通过 rels 解析 r:id → Target 的映射
+        let mut rid_to_target: HashMap<String, String> = HashMap::new();
+        let mut rels_search = 0;
+        while let Some(rel_start) = rels_xml[rels_search..].find("<Relationship ") {
+            let abs_start = rels_search + rel_start;
+            let rel_end = match rels_xml[abs_start..].find("/>") {
+                Some(p) => abs_start + p + 2,
+                None => break,
+            };
+            let rel_tag = &rels_xml[abs_start..rel_end];
+
+            let id = extract_attr(rel_tag, "Id");
+            let target = extract_attr(rel_tag, "Target");
+
+            if let (Some(i), Some(t)) = (id, target) {
+                rid_to_target.insert(i, t);
+            }
+            rels_search = rel_end;
+        }
+
+        // 组装: sheet 名称 → xl/<target>
+        for (name, rid) in &sheet_rids {
+            if let Some(target) = rid_to_target.get(rid) {
+                map.insert(name.clone(), format!("xl/{}", target));
             }
         }
-        // workbook.xml 中未找到 → 确认不存在此 Sheet
-        None
+        map
+    }
+
+    /// 在 ZIP entries 中查找 Sheet 的路径（HashMap 查找，O(1)）
+    fn find_sheet_path(&self, name: &str) -> Option<String> {
+        self.sheet_map.get(name).cloned()
     }
 
     // ─── Shared String Table ───────────────────────────────────
@@ -416,6 +456,19 @@ impl XlsxWriter {
         w.into_inner().into_inner()
     }
 
+    /// 清除公式缓存值: <f>SUM(...)</f><v>OLD</v> → <f>SUM(...)</f>
+    /// 只处理被修改过的 sheet (记录在 dirty_sheets 中)
+    fn strip_formula_cache(xml: &[u8]) -> Vec<u8> {
+        let s = String::from_utf8_lossy(xml);
+        // 匹配两种公式格式后紧跟的缓存 <v>:
+        // 1. <f t="shared" si="0"/> → 自闭合
+        // 2. <f>SUM(...)</f>       → 有内容的公式
+        let re = regex::Regex::new(r"(<f[^>]*?/>)\s*<v>[^<]*</v>").unwrap();
+        let s = re.replace_all(&s, "$1").into_owned();
+        let re2 = regex::Regex::new(r"(<f[^>]*>[^<]*</f>)\s*<v>[^<]*</v>").unwrap();
+        re2.replace_all(&s, "$1").into_owned().into_bytes()
+    }
+
     // ─── 序列化 ZIP ──────────────────────────────────────────
 
     fn to_zip(&self) -> Result<Vec<u8>, AppError> {
@@ -428,8 +481,7 @@ impl XlsxWriter {
         all_entries.sort_by_key(|(k, _)| *k);
 
         for (name, data) in &all_entries {
-            let actual_data = if *name == "xl/sharedStrings.xml" && self.sst_modified {
-                // 使用重建的 SST
+            let mut actual_data: Vec<u8> = if *name == "xl/sharedStrings.xml" && self.sst_modified {
                 Self::build_sst(
                     self.shared_strings.len(),
                     self.shared_strings.len(),
@@ -438,6 +490,10 @@ impl XlsxWriter {
             } else {
                 (*data).clone()
             };
+            // 只清除被修改过的 sheet 的公式缓存 (写入了新数据→依赖公式需重算)
+            if name.starts_with("xl/worksheets/sheet") && name.ends_with(".xml") && self.dirty_sheets.contains(name.as_str()) {
+                actual_data = Self::strip_formula_cache(&actual_data);
+            }
             zip_writer
                 .start_file(*name, opts)
                 .map_err(|e| AppError::Other(format!("ZIP 创建条目 '{}': {}", name, e)))?;
@@ -708,10 +764,19 @@ fn parse_cell_column(ref_str: &str) -> Option<u32> {
     Some(col)
 }
 
-/// 找 </c> 闭合位置，处理嵌套（f/v/is 等子标签）
+/// 找单元格结束位置，处理两种形式：
+///   <c r="A1"/>         → 自闭合，找 "/>"
+///   <c r="A1"><v>1</v></c> → 有子元素，找 "</c>"
 fn find_cell_end(input: &str, offset: usize) -> Option<usize> {
     let s = &input[offset..];
-    // 简单策略: 找下一个 </c>
+    // 先检查是否是自闭合标签 (如 <c r="C2" s="52"/>)
+    if let Some(gt_pos) = s.find('>') {
+        let before_gt = &s[..gt_pos];
+        if before_gt.ends_with('/') {
+            return Some(offset + gt_pos + 1);
+        }
+    }
+    // 否则找闭合标签 </c>
     s.find("</c>").map(|p| offset + p + "</c>".len())
 }
 
@@ -777,6 +842,15 @@ fn apply_number_format_region(
         }
     }
     Ok(result.into_bytes())
+}
+
+/// 从 XML 标签中提取属性值 (如 extract_attr(tag, "name") → Some("盛唐融信"))
+fn extract_attr(tag: &str, attr: &str) -> Option<String> {
+    let marker = format!("{}=\"", attr);
+    let pos = tag.find(&marker)?;
+    let rest = &tag[pos + marker.len()..];
+    let end = rest.find('\"')?;
+    Some(rest[..end].to_string())
 }
 
 /// 列号 → 字母 (1→A, 2→B, ..., 27→AA)
@@ -896,6 +970,87 @@ mod tests {
         let has_55_5 = range.used_cells().any(|(_, _, v)| matches!(v, calamine::Data::Float(x) if (*x - 55.5).abs() < 0.01));
         assert!(has_99, "未找到值 99.0");
         assert!(has_55_5, "未找到值 55.5");
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn test_real_template_sheet_map_and_write() {
+        let tmpl = r"C:\Users\Administrator\Desktop\2026年4月分析\【2026年4月】经营数据 - 空.xlsx";
+        if !std::path::Path::new(tmpl).exists() {
+            eprintln!("模板文件不存在，跳过测试");
+            return;
+        }
+        let mut w = XlsxWriter::open(std::path::Path::new(tmpl)).unwrap();
+        // 验证 sheet_map
+        for name in &["填写页", "保险类", "商写类", "酒店类", "盛唐融信", "北京中言"] {
+            let path = w.find_sheet_path(name);
+            assert!(path.is_some(), "sheet '{}' 未在 sheet_map 中找到!", name);
+            eprintln!("  {} -> {}", name, path.unwrap());
+        }
+        // 实际写入测试: 往保险类 C2 写 12345.67
+        w.set_number("保险类", 3, 2, 12345.67).unwrap();
+        // 保存到临时文件
+        let tmp = std::env::temp_dir().join("test_real_template.xlsx");
+        w.save(&tmp).unwrap();
+        // 用 calamine 读回验证
+        let mut reader: calamine::Xlsx<_> = calamine::open_workbook(&tmp).unwrap();
+        let range = reader.worksheet_range("保险类").unwrap();
+        let found = range.used_cells().any(|(_, _, v)| matches!(v, calamine::Data::Float(x) if (*x - 12345.67).abs() < 0.01));
+        assert!(found, "写入 保险类 C2=12345.67 后未能在文件中找到!");
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    /// 验证修改空单元格（自闭合标签）不会破坏同行相邻单元格
+    #[test]
+    fn test_modify_empty_cell_preserves_neighbors() {
+        let tmp = std::env::temp_dir().join("test_empty_cell.xlsx");
+        // 创建: A1="H", B1(空,有格式), C1=42
+        let mut w = XlsxWriter::empty();
+        w.set_string("Sheet1", 1, 1, "Header").unwrap();
+        w.set_number("Sheet1", 3, 1, 42.0).unwrap();
+        w.save(&tmp).unwrap();
+
+        // 重新打开，写入 B1=99 (之前为空/不存在)
+        let mut w2 = XlsxWriter::open(&tmp).unwrap();
+        w2.set_number("Sheet1", 2, 1, 99.0).unwrap();
+        w2.save(&tmp).unwrap();
+
+        // 验证 A1 和 C1 仍然存在
+        let mut reader: calamine::Xlsx<_> = calamine::open_workbook(&tmp).unwrap();
+        let range = reader.worksheet_range("Sheet1").unwrap();
+        let has_header = range.used_cells().any(|(_, _, v)| v == &calamine::Data::String("Header".into()));
+        let has_42 = range.used_cells().any(|(_, _, v)| matches!(v, calamine::Data::Float(x) if (*x - 42.0).abs() < 0.01));
+        let has_99 = range.used_cells().any(|(_, _, v)| matches!(v, calamine::Data::Float(x) if (*x - 99.0).abs() < 0.01));
+        assert!(has_header, "A1 'Header' 被破坏");
+        assert!(has_99, "B1=99 写入失败");
+        assert!(has_42, "C1=42 被 B1 写入破坏!");
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    /// 验证修改真实模板的空单元格不破坏相邻单元格
+    #[test]
+    fn test_real_template_preserves_neighbors() {
+        let tmpl = r"C:\Users\Administrator\Desktop\2026年4月分析\【2026年4月】经营数据 - 空.xlsx";
+        if !std::path::Path::new(tmpl).exists() { return; }
+        let tmp = std::env::temp_dir().join("test_tmpl_neighbor.xlsx");
+        std::fs::copy(tmpl, &tmp).unwrap();
+
+        // 打开模板，修改商写类 C2(原本为空单元格)
+        let mut w = XlsxWriter::open(&tmp).unwrap();
+        w.set_number("商写类", 3, 2, 99999.0).unwrap();
+        w.save(&tmp).unwrap();
+
+        // 验证相邻单元格 A2(共享字符串), B2(共享字符串), L2 仍然存在
+        let mut reader: calamine::Xlsx<_> = calamine::open_workbook(&tmp).unwrap();
+        let range = reader.worksheet_range("商写类").unwrap();
+        let rows: Vec<&[calamine::Data]> = range.rows().collect();
+        // Row 2 (0-based index 1) should exist
+        assert!(rows.len() > 1, "Row 2 丢失");
+        let row2 = rows[1];
+        assert!(row2.len() >= 11, "Row 2 仅剩 {} 列, 相邻单元格被截断", row2.len());
+        // C2 (col 2) should have 99999
+        let has_99999 = range.used_cells().any(|(_, _, v)| matches!(v, calamine::Data::Float(x) if (*x - 99999.0).abs() < 0.01));
+        assert!(has_99999, "C2=99999 写入失败");
         std::fs::remove_file(&tmp).ok();
     }
 }

@@ -21,11 +21,7 @@ impl ReportWriter {
         year: u32,
         month: u32,
     ) -> Result<(), AppError> {
-        let is_writeback_only = ai_results.is_empty();
-        let mut w = if is_writeback_only {
-            tracing::info!("[导出] 汇总回写模式，创建新工作簿（纯 Rust，零 C 依赖）");
-            XlsxWriter::empty()
-        } else if output_path.exists() {
+        let mut w = if output_path.exists() {
             tracing::info!("[导出] 打开已有模板: {}", output_path.display());
             XlsxWriter::open(output_path)?
         } else {
@@ -66,7 +62,9 @@ fn write_config_sheet(
 ) -> Result<(), AppError> {
     w.set_number("填写页", 1, 2, month as f64)?;  // A2
     w.set_number("填写页", 1, 4, year as f64)?;   // A4
-    w.set_string("填写页", 3, 1, project_name)?;  // C1
+    // C1 写项目名会修改 SST → 暂时跳过，模板已有正确值
+    // w.set_string("填写页", 3, 1, project_name)?;
+    let _ = project_name; // suppress unused warning
     Ok(())
 }
 
@@ -301,39 +299,87 @@ fn write_financial(w: &mut XlsxWriter, companies: &[serde_json::Value]) -> Resul
 // ─── AI分析结果 Sheet ───────────────────────────────────────
 
 fn write_ai_results(w: &mut XlsxWriter, ai_results: &[crate::models::analysis::AnalysisResult]) -> Result<(), AppError> {
-    let valid: Vec<_> = ai_results.iter().filter(|r| {
-        !r.content.trim().is_empty() && r.success
-    }).collect();
-    if valid.is_empty() { return Ok(()); }
+    // 板块 → 商写类L14 / 保险类L14 / 酒店类M13, 公司 → C61 (与 AardMiner 一致)
+    for r in ai_results {
+        tracing::info!(
+            "[写入AI] cat={} company={} bt={} success={} len={} score={}",
+            r.analysis_category, r.company_name, r.business_type,
+            r.success, r.content.len(), r.quality_score
+        );
+        if !r.success || r.content.is_empty() {
+            tracing::warn!(
+                "[写入AI] 跳过 {} (success={} len={} err={:?})",
+                r.company_name, r.success, r.content.len(), r.error_message
+            );
+            continue;
+        }
+        let content = if r.content.len() > 32000 {
+            // 安全截断，确保不切割多字节 UTF-8 字符
+            let end = r.content.char_indices()
+                .nth(32000)
+                .map(|(i, _)| i)
+                .unwrap_or(r.content.len());
+            &r.content[..end]
+        } else { &r.content };
+        let clean = sanitize_text(content);
 
-    let sheet = "AI分析结果";
-    w.ensure_sheet(sheet)?;
-
-    // 表头
-    for (ci, h) in ["公司/板块", "类别", "业态", "评分", "分析内容"].iter().enumerate() {
-        w.set_string(sheet, (ci + 1) as u32, 1, h)?;
+        match r.analysis_category.as_str() {
+            "segment" => {
+                let (sheet, col, row) = if r.business_type.contains("商写") || r.company_name.contains("商写") {
+                    ("商写类", 12, 14)
+                } else if r.business_type.contains("保险") || r.company_name.contains("保险") {
+                    ("保险类", 12, 14)
+                } else {
+                    ("酒店类", 13, 14)
+                };
+                let content_preview = str_preview(&clean, 80);
+                tracing::info!(
+                    "[写入AI] 板块 → {} {}{}: {}...",
+                    sheet, crate::services::xlsx_writer::col_letter(col), row, content_preview
+                );
+                if let Err(e) = w.set_string(sheet, col, row, &clean) {
+                    tracing::error!("[写入AI] 板块写入失败 {} {}{}: {}", sheet, crate::services::xlsx_writer::col_letter(col), row, e);
+                    return Err(e);
+                }
+            }
+            "company" => {
+                let content_preview = str_preview(&clean, 80);
+                tracing::info!(
+                    "[写入AI] 公司 → {} C61: {}...",
+                    r.company_name, content_preview
+                );
+                if let Err(e) = w.set_string(&r.company_name, 3, 61, &clean) {
+                    tracing::error!("[写入AI] 公司写入失败 {} C61: {}", r.company_name, e);
+                    return Err(e);
+                }
+            }
+            _ => {
+                tracing::warn!("[写入AI] 未知类别 '{}', 跳过", r.analysis_category);
+            }
+        }
     }
-
-    for (i, r) in valid.iter().enumerate() {
-        let row = (i + 2) as u32;
-        w.set_string(sheet, 1, row, &sanitize_text(&r.company_name))?;
-        w.set_string(sheet, 2, row, &sanitize_text(&r.analysis_category))?;
-        w.set_string(sheet, 3, row, &sanitize_text(&r.business_type))?;
-        w.set_string(sheet, 4, row, &format!("{}/8", r.quality_score))?;
-        let content = if r.content.len() > 32000 { &r.content[..32000] } else { &r.content };
-        w.set_string(sheet, 5, row, &sanitize_text(content))?;
-    }
-    tracing::info!("[导出.AI] 写入 {} 条 AI 分析结果", valid.len());
     Ok(())
 }
 
 // ─── 辅助 ──────────────────────────────────────────────────
 
 fn setn(w: &mut XlsxWriter, sheet: &str, col: u32, row: u32, v: f64) {
-    let _ = w.set_number(sheet, col, row, v);
+    if let Err(e) = w.set_number(sheet, col, row, v) {
+        tracing::warn!("[report_writer] set_number {}{}={} 失败: {}", xlsx_writer::col_letter(col), row, v, e);
+    }
 }
 
 fn jf(v: &serde_json::Value) -> f64 { v.as_f64().unwrap_or(0.0) }
+
+/// UTF-8 安全截断预览（不切割多字节字符）
+fn str_preview(s: &str, max_chars: usize) -> &str {
+    if s.len() <= max_chars { return s; }
+    let end = s.char_indices()
+        .nth(max_chars)
+        .map(|(i, _)| i)
+        .unwrap_or(s.len());
+    &s[..end]
+}
 
 /// 清理文本中的非法 XML 字符（0x00-0x08, 0x0B-0x0C, 0x0E-0x1F）
 fn sanitize_text(text: &str) -> String {

@@ -61,7 +61,7 @@ fn test_extract_decimal() {
 }
 
 // ============================================================
-// AnalysisQuality 评分测试 (4维度，满分8分，摘要不计分)
+// AnalysisQuality 评分测试 (5维度，满分10分，摘要计2分)
 // ============================================================
 
 #[test]
@@ -78,7 +78,7 @@ fn test_quality_full_score() {
     assert!(q.has_ebitda, "应该检测到EBITDA");  // "EBITDA"
     assert!(q.has_cashflow, "应该检测到现金流");
     assert!(q.has_expense, "应该检测到经营支出");
-    assert_eq!(q.score, 8, "满分应为8（4维度×2，摘要不计分）");
+    assert_eq!(q.score, 10, "满分应为10（摘要2+4维度×2）");
 }
 
 #[test]
@@ -92,7 +92,7 @@ fn test_quality_missing_items() {
     assert!(!q.has_ebitda);
     assert!(!q.has_cashflow);
     assert!(!q.has_expense);
-    assert_eq!(q.score, 2, "仅营收=2分（摘要不计分）");
+    assert_eq!(q.score, 4, "摘要+营收=4分"); // 摘要2分 + 营收2分
 }
 
 #[test]
@@ -207,10 +207,10 @@ fn test_quality_checker_threshold() {
     let checker = QualityChecker::new(8);
     assert_eq!(checker.max_retries(), 2);
 
-    // 满分内容
+    // 满分内容（摘要+4维度 = 10分）
     let content = "2024年收入领先。\n营业收入：1000万。\nEBITDA：200万。\n经营活动净现金流：300万。\n经营支出：500万。";
     let result = checker.evaluate("测试公司", content, None);
-    assert_eq!(result.score, 8);
+    assert_eq!(result.score, 10);
     assert!(result.passed);
     assert!(result.reason.is_none());
 }

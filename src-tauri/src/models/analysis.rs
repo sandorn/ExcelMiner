@@ -162,6 +162,7 @@ impl AnalysisQuality {
         };
 
         let mut score = 0u32;
+        if has_summary { score += 2; }
         if d1 { score += 2; }
         if d2 { score += 2; }
         if d3 { score += 2; }

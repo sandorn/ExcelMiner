@@ -6,7 +6,8 @@
 
 use crate::error::AppResult;
 use crate::models::analysis::{AggregationResult, PreviewData};
-use crate::models::project::Project;
+use crate::models::project::{BusinessType, Company, Project};
+use crate::services::company_registry::company_registry;
 use crate::services::excel_reader::ExcelReader;
 use crate::services::number_parser::extract_number;
 use crate::services::data_aggregator::{AggregationEngine, EngineType};
@@ -58,9 +59,21 @@ impl AggregationEngine for FinancialAggregator {
         let mut warnings = Vec::new();
         let mut results: Vec<serde_json::Value> = Vec::new();
 
+        // 优先使用项目配置的公司列表，为空时从注册表加载
+        let companies: Vec<Company> = if !project.companies.is_empty() {
+            project.companies.clone()
+        } else {
+            let registry = company_registry();
+            let mut cs = Vec::new();
+            for c in &registry.insurance { cs.push(Company { name: c.name.clone(), business_type: BusinessType::Insurance, regions: vec![] }); }
+            for c in &registry.commercial { cs.push(Company { name: c.name.clone(), business_type: BusinessType::Commercial, regions: vec![] }); }
+            for h in &registry.hotel { cs.push(Company { name: h.name.clone(), business_type: BusinessType::Hotel, regions: vec![] }); }
+            cs
+        };
+
         // 按照 VBA: 逐公司打开经营报表→读取"指标统计"Sheet
         // 源范围 D4:O20(16行x12列) → 复制到目标 G2:R18
-        for company in &project.companies {
+        for company in &companies {
             let mut targets_missing_warned = false; // 每个公司只警告一次
             let path = folder.join(format!("{}.xlsx", company.name));
             let mut reader = match ExcelReader::open(&path) {

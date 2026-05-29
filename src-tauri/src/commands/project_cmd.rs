@@ -32,13 +32,38 @@ pub async fn create_project(
 ) -> Result<Project, AppError> {
     tracing::info!("创建项目: {} ({}年{}月)", name, year, month);
 
+    // 从公司注册表自动填充公司列表
+    let registry = crate::services::company_registry::company_registry();
+    let mut companies = Vec::new();
+    for c in &registry.insurance {
+        companies.push(crate::models::project::Company {
+            name: c.name.clone(),
+            business_type: crate::models::project::BusinessType::Insurance,
+            regions: vec![],
+        });
+    }
+    for c in &registry.commercial {
+        companies.push(crate::models::project::Company {
+            name: c.name.clone(),
+            business_type: crate::models::project::BusinessType::Commercial,
+            regions: vec![],
+        });
+    }
+    for h in &registry.hotel {
+        companies.push(crate::models::project::Company {
+            name: h.name.clone(),
+            business_type: crate::models::project::BusinessType::Hotel,
+            regions: vec![],
+        });
+    }
+
     let project = Project {
         name,
         year,
         month,
         data_folder: PathBuf::from(&data_folder),
         output_file: PathBuf::from(&output_file),
-        companies: vec![],
+        companies,
         ytd_months: month,
         ai_config: Default::default(),
     };

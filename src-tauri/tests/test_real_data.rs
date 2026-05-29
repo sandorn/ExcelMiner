@@ -184,10 +184,10 @@ fn test_full_roundtrip() {
     assert!(sheets.contains(&"填写页".to_string()));
     assert!(sheets.contains(&"保险类".to_string()) || sheets.contains(&"盛唐融信".to_string()));
 
-    // 验证 填写页 A2=4
+    // 验证 填写页 A2=4 (used range 从第2行开始, rows[0] 对应第2行)
     let cfg = wb.worksheet_range("填写页").unwrap();
     let cfg_rows: Vec<&[calamine::Data]> = cfg.rows().collect();
-    let month_val = &cfg_rows[1][0];
+    let month_val = &cfg_rows[0][0];
     println!("填写页 A2(月份): {}", month_val);
     assert!(month_val.to_string().contains("4"), "月份应为4");
 
