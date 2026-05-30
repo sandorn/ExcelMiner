@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{AppError, AppResult};
 use crate::models::analysis::{AnalysisResult, ProgressUpdate, TokenUsage};
 use crate::models::project::{AIConfig, BusinessType};
+use crate::utils::log_sanitizer::sanitize_key;
 
 /// DeepSeek API 消息
 #[derive(Debug, Serialize)]
@@ -53,9 +54,15 @@ pub struct AIAnalyzer {
 }
 
 impl AIAnalyzer {
+    /// 创建 AI 分析器，HTTP 超时从 AppConfig.tuning.api_timeout_secs 读取（默认 60s）
     pub fn new(config: AIConfig) -> AppResult<Self> {
+        Self::with_timeout(config, 60)
+    }
+
+    /// 创建 AI 分析器并指定超时秒数
+    pub fn with_timeout(config: AIConfig, timeout_secs: u64) -> AppResult<Self> {
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(60))
+            .timeout(std::time::Duration::from_secs(timeout_secs))
             .build()
             .map_err(|e| AppError::Other(e.to_string()))?;
 
@@ -129,11 +136,7 @@ impl AIAnalyzer {
         };
 
         let api_url = &self.config.api_url;
-        let api_key_preview = if self.config.api_key.len() > 8 {
-            format!("{}...{}", &self.config.api_key[..4], &self.config.api_key[self.config.api_key.len()-4..])
-        } else {
-            "***".to_string()
-        };
+        let api_key_preview = sanitize_key(&self.config.api_key);
         tracing::info!("[API] → POST {} | key={} | model={} | temp={} | max_tok={} | sys={}ch user={}ch",
             api_url, api_key_preview, self.config.model, self.config.temperature,
             self.config.max_tokens, system_prompt.len(), user_prompt.len());

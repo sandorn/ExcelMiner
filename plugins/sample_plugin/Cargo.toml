@@ -1,0 +1,11 @@
+[package]
+name = "sample_plugin"
+version = "0.1.0"
+edition = "2021"
+description = "ExcelMiner 示例插件 — 展示 EnginePlugin trait 的最小实现"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+excelminer_lib = { path = "../../src-tauri" }

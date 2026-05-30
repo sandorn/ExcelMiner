@@ -7,22 +7,19 @@ use crate::commands::project_cmd::AppState;
 use crate::error::AppError;
 use crate::models::analysis::{AggregationResult, PreviewData};
 use crate::models::project::Project;
-use crate::services::data_aggregator::{
-    AggregationEngine,
-    insurance::InsuranceAggregator,
-    hotel::HotelAggregator,
-    commercial::CommercialAggregator,
-    financial::FinancialAggregator,
-};
 use crate::services::report_writer::ReportWriter;
 
 /// 预览导入（扫描文件发现数据）
 #[tauri::command]
 pub async fn preview_import(
+    state: State<'_, AppState>,
     project: Project,
     engine: String,
 ) -> Result<PreviewData, AppError> {
-    let engine = get_engine(&engine)?;
+    let registry = state.engine_registry.lock().await;
+    let engine = registry
+        .find(&engine)
+        .ok_or_else(|| AppError::Other(format!("未知汇总引擎: {}", engine)))?;
     engine.preview(&project)
 }
 
@@ -35,25 +32,36 @@ pub async fn execute_aggregation(
     engines: Vec<String>,
     window: Window,
 ) -> Result<Vec<AggregationResult>, AppError> {
-    // ── Phase 1: 启动所有引擎（同时并行执行）─────────────────────────────
+    // ── Phase 1: 从注册表收集所有需要的引擎 ────────────────────────────
     let total = engines.len();
     let mut spawn_errors: Vec<String> = Vec::new();
     let mut set = JoinSet::new();
 
-    for engine_key in &engines {
-        let engine = match get_engine(engine_key) {
-            Ok(e) => e,
-            Err(e) => {
-                spawn_errors.push(format!("{}: {}", engine_key, e));
-                continue;
+    // 先锁注册表，一次性收集所有引擎的 Arc 克隆
+    let engine_arcs = {
+        let registry = state.engine_registry.lock().await;
+        engines.iter().map(|key| {
+            match registry.find(key) {
+                Some(arc) => (key.clone(), Some(arc)),
+                None => {
+                    spawn_errors.push(format!("{}: 未知引擎", key));
+                    (key.clone(), None)
+                }
             }
+        }).collect::<Vec<_>>()
+    }; // MutexGuard 释放
+
+    for (engine_key, engine_arc) in engine_arcs {
+        let engine_arc = match engine_arc {
+            Some(a) => a,
+            None => continue,
         };
         let project = project.clone();
         let engine_key_label = engine_key.clone();
 
         set.spawn(async move {
-            let engine_name = engine.name().to_string();
-            let result = engine.execute(&project);
+            let engine_name = engine_arc.display_name().to_string();
+            let result = engine_arc.execute(&project);
             (engine_name, engine_key_label, result)
         });
     }
@@ -113,11 +121,14 @@ pub async fn execute_aggregation(
     }
 
     // ── Phase 3: 合并（保留未被本次运行覆盖的引擎结果）────────────────────
-    let run_engine_names: Vec<String> = engines
-        .iter()
-        .filter_map(|e| get_engine(e).ok())
-        .map(|eng| eng.name().to_string())
-        .collect();
+    let run_engine_names: Vec<String> = {
+        let registry = state.engine_registry.lock().await;
+        engines
+            .iter()
+            .filter_map(|e| registry.find(e))
+            .map(|eng| eng.display_name().to_string())
+            .collect()
+    };
 
     let mut stored = state.aggregation_results.lock().await;
     stored.retain(|r| !run_engine_names.contains(&r.engine_name));
@@ -147,12 +158,21 @@ pub async fn execute_aggregation(
     Ok(new_results)
 }
 
-fn get_engine(name: &str) -> Result<Box<dyn AggregationEngine>, AppError> {
-    match name {
-        "insurance" | "保险" => Ok(Box::new(InsuranceAggregator)),
-        "hotel" | "酒店" => Ok(Box::new(HotelAggregator)),
-        "commercial" | "商写" => Ok(Box::new(CommercialAggregator)),
-        "financial" | "经营报表" => Ok(Box::new(FinancialAggregator)),
-        _ => Err(AppError::Other(format!("未知汇总引擎: {}", name))),
-    }
+/// 列出所有可用汇总引擎（内置 + 插件）
+#[tauri::command]
+pub async fn list_engines(
+    state: State<'_, AppState>,
+) -> Result<Vec<serde_json::Value>, AppError> {
+    let registry = state.engine_registry.lock().await;
+    let engines: Vec<_> = registry
+        .list_all()
+        .into_iter()
+        .map(|(id, name)| {
+            serde_json::json!({
+                "id": id,
+                "name": name,
+            })
+        })
+        .collect();
+    Ok(engines)
 }

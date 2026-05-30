@@ -1,6 +1,7 @@
 pub mod ai_analyzer;
 pub mod company_registry;
 pub mod data_aggregator;
+pub mod engine_plugin;
 pub mod excel_reader;
 pub mod number_parser;
 pub mod quality_checker;

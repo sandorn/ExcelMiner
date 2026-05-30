@@ -7,6 +7,7 @@ use tokio::sync::Mutex;
 use crate::config::AppConfig;
 use crate::error::AppError;
 use crate::models::project::{Project, ProjectConfig};
+use crate::services::engine_plugin::EngineRegistry;
 
 /// 全局应用状态
 pub struct AppState {
@@ -18,6 +19,10 @@ pub struct AppState {
     pub analysis_results: Mutex<Vec<crate::models::analysis::AnalysisResult>>,
     /// 日志文件写入 guard（持有期间保证日志刷新到磁盘）
     pub _log_guard: Mutex<Option<tracing_appender::non_blocking::WorkerGuard>>,
+    /// 导出取消标记，用于在导出过程中中止写入
+    pub export_cancel_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// 插件引擎注册表（内置引擎 + 动态加载的插件）
+    pub engine_registry: Mutex<EngineRegistry>,
 }
 
 /// 创建新项目

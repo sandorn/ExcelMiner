@@ -81,12 +81,33 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
             let config = AppConfig::load().unwrap_or_default();
+
+            // 初始化引擎注册表：注册内置引擎 + 发现插件
+            let mut registry = crate::services::engine_plugin::EngineRegistry::new();
+            use crate::services::data_aggregator::{
+                insurance::InsuranceAggregator, hotel::HotelAggregator,
+                commercial::CommercialAggregator, financial::FinancialAggregator,
+            };
+            use crate::services::engine_plugin::BuiltinAdapter;
+            registry.register_builtin(Box::new(BuiltinAdapter::new(InsuranceAggregator, "insurance")));
+            registry.register_builtin(Box::new(BuiltinAdapter::new(HotelAggregator, "hotel")));
+            registry.register_builtin(Box::new(BuiltinAdapter::new(CommercialAggregator, "commercial")));
+            registry.register_builtin(Box::new(BuiltinAdapter::new(FinancialAggregator, "financial")));
+            registry.discover_plugins();
+            tracing::info!(
+                "[EngineRegistry] 内置引擎: {} 个, 插件: {} 个",
+                registry.builtin_count(),
+                registry.plugin_count()
+            );
+
             let state = AppState {
                 config: Mutex::new(config),
                 current_project: Mutex::new(None),
                 aggregation_results: Mutex::new(Vec::new()),
                 analysis_results: Mutex::new(Vec::new()),
                 _log_guard: Mutex::new(Some(log_guard)),
+                export_cancel_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                engine_registry: Mutex::new(registry),
             };
             app.manage(state);
             tracing::info!("ExcelMiner 初始化完成");
@@ -101,6 +122,7 @@ pub fn run() {
             // 导入命令
             commands::import_cmd::preview_import,
             commands::import_cmd::execute_aggregation,
+            commands::import_cmd::list_engines,
             // 分析命令
             commands::analysis_cmd::execute_segment_analysis,
             commands::analysis_cmd::execute_company_analysis,
@@ -109,9 +131,12 @@ pub fn run() {
             commands::analysis_cmd::read_dskey,
             // 导出命令
             commands::export_cmd::export_report,
+            commands::export_cmd::cancel_export,
             commands::export_cmd::copy_to_clipboard,
             commands::export_cmd::open_in_explorer,
             commands::export_cmd::open_log_folder,
+            // 仪表盘命令
+            commands::dashboard_cmd::get_dashboard_data,
         ]);
 
     app.build(tauri::generate_context!())

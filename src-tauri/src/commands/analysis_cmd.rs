@@ -15,6 +15,22 @@ use crate::models::analysis::{AnalysisResult, AggregationResult, ProgressUpdate,
 use crate::models::project::{BusinessType, Project};
 use crate::services::ai_analyzer::AIAnalyzer;
 
+/// 解析 API Key：项目配置 → 环境变量
+fn resolve_api_key(project: &mut Project) -> bool {
+    if !project.ai_config.api_key.is_empty() {
+        return true;
+    }
+    // 尝试从环境变量读取
+    if let Ok(key) = std::env::var("EXCELMINER_API_KEY") {
+        if !key.is_empty() {
+            project.ai_config.api_key = key;
+            tracing::info!("[API Key] 从环境变量 EXCELMINER_API_KEY 加载");
+            return true;
+        }
+    }
+    false
+}
+
 /// 阶段一：板块业态分析（跳过质量检查，仅检查内容长度≥50字）
 #[tauri::command]
 pub async fn execute_segment_analysis(
@@ -24,7 +40,8 @@ pub async fn execute_segment_analysis(
     custom_prompt: Option<String>,
     window: Window,
 ) -> Result<Vec<AnalysisResult>, AppError> {
-    if project.ai_config.api_key.is_empty() {
+    let mut project = project;
+    if !resolve_api_key(&mut project) {
         return Err(AppError::Config("请先配置 DeepSeek API Key".into()));
     }
 
@@ -211,7 +228,8 @@ pub async fn execute_company_analysis(
     project: Project,
     window: Window,
 ) -> Result<Vec<AnalysisResult>, AppError> {
-    if project.ai_config.api_key.is_empty() {
+    let mut project = project;
+    if !resolve_api_key(&mut project) {
         return Err(AppError::Config("请先配置 DeepSeek API Key".into()));
     }
 
@@ -230,7 +248,12 @@ pub async fn execute_company_analysis(
     let total = project.companies.len();
     let progress_pct = project.month as f64 / 12.0 * 100.0;
 
-    let semaphore = Arc::new(Semaphore::new(3));
+    // 从全局配置读取最大并发数
+    let max_concurrent = {
+        let cfg = state.config.lock().await;
+        cfg.tuning.max_concurrent_requests.max(1)
+    };
+    let semaphore = Arc::new(Semaphore::new(max_concurrent));
     let completed = Arc::new(AtomicUsize::new(0));
     let mut set = JoinSet::new();
 
@@ -387,7 +410,8 @@ pub async fn execute_analysis(
     custom_prompt: Option<String>,
     window: Window,
 ) -> Result<Vec<AnalysisResult>, AppError> {
-    if project.ai_config.api_key.is_empty() {
+    let mut project = project;
+    if !resolve_api_key(&mut project) {
         return Err(AppError::Config("请先配置 DeepSeek API Key".into()));
     }
 
@@ -527,7 +551,12 @@ pub async fn execute_analysis(
 
     let step_idx_base = step_idx; // 阶段一结束后的进度基数
     let analyzer = Arc::new(analyzer);
-    let semaphore = Arc::new(Semaphore::new(3));
+    // 从全局配置读取最大并发数
+    let max_concurrent = {
+        let cfg = state.config.lock().await;
+        cfg.tuning.max_concurrent_requests.max(1)
+    };
+    let semaphore = Arc::new(Semaphore::new(max_concurrent));
     let completed = Arc::new(AtomicUsize::new(0));
     let company_total = all_companies.len();
     let mut set = JoinSet::new();

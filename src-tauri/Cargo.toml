@@ -1,6 +1,6 @@
 [package]
 name = "excelminer"
-version = "0.7.0"
+version = "0.8.0"
 description = "子公司经营数据汇总分析系统"
 authors = ["ExcelMiner"]
 edition = "2021"
@@ -56,8 +56,10 @@ tracing-appender = "0.2"
 # Utilities
 chrono = "0.4"
 regex = "1"
+rand = "0.8"
 uuid = { version = "1", features = ["v4"] }
 dirs = "6"
+libloading = "0.8"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

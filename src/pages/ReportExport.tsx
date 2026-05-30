@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
     Card,
     Button,
@@ -10,6 +10,7 @@ import {
     Tag,
     message,
     Empty,
+    Progress,
 } from 'antd';
 import {
     ExportOutlined,
@@ -27,6 +28,12 @@ export default function ReportExport() {
     const aggregationResults = useAppStore((s) => s.aggregationResults);
 
     const [exporting, setExporting] = useState(false);
+    // 导出进度状态：step 文本、progress 百分比、status (idle|running|done|error)
+    const [exportProgress, setExportProgress] = useState<{
+        step: string;
+        progress: number;
+        status: string;
+    }>({ step: '', progress: 0, status: 'idle' });
 
     const handleOpenLog = async () => {
         try {
@@ -40,6 +47,8 @@ export default function ReportExport() {
 
     const handleExport = async () => {
         setExporting(true);
+        // 重置进度显示
+        setExportProgress({ step: '准备导出', progress: 0, status: 'running' });
         try {
             const { invoke } = await import('@tauri-apps/api/core');
             const path = await invoke<string>('export_report');
@@ -51,14 +60,24 @@ export default function ReportExport() {
         }
     };
 
+    // 取消导出请求
+    const handleCancelExport = async () => {
+        try {
+            const { invoke } = await import('@tauri-apps/api/core');
+            await invoke('cancel_export');
+            message.info('已请求取消导出');
+        } catch (e: any) {
+            message.error(`取消导出失败: ${e}`);
+        }
+    };
+
     const handleCopyAll = async () => {
         const text = analysisResults
             .filter((r) => r.success)
-            .map(
-                (r) =>
-                    r.analysis_category === 'segment'
-                        ? `【${r.company_name} - 板块分析】\n${r.content}`
-                        : `【${r.company_name} - 经营指标分析】\n${r.content}`,
+            .map((r) =>
+                r.analysis_category === 'segment'
+                    ? `【${r.company_name} - 板块分析】\n${r.content}`
+                    : `【${r.company_name} - 经营指标分析】\n${r.content}`,
             )
             .join('\n\n---\n\n');
 
@@ -87,6 +106,25 @@ export default function ReportExport() {
             message.error(`打开文件夹失败: ${e}`);
         }
     };
+
+    // 监听后端导出进度事件
+    useEffect(() => {
+        let unlisten: any;
+        (async () => {
+            const { listen } = await import('@tauri-apps/api/event');
+            unlisten = await listen('export-progress', (event) => {
+                const payload = event.payload as any;
+                setExportProgress({
+                    step: payload.step ?? '',
+                    progress: payload.progress ?? 0,
+                    status: payload.status ?? 'running',
+                });
+            });
+        })();
+        return () => {
+            if (unlisten) unlisten();
+        };
+    }, []);
 
     if (!project) {
         return (
@@ -191,7 +229,8 @@ export default function ReportExport() {
                                                             : 'orange'
                                                 }
                                             >
-                                                {r.analysis_category === 'segment'
+                                                {r.analysis_category ===
+                                                'segment'
                                                     ? `${r.business_type}板块`
                                                     : '经营指标'}
                                             </Tag>
@@ -225,6 +264,19 @@ export default function ReportExport() {
                     justifyContent: 'flex-end',
                 }}
             >
+                {exportProgress.status !== 'idle' && (
+                    <div style={{ flex: 1, marginRight: 16 }}>
+                        <Progress
+                            percent={Math.round(exportProgress.progress * 100)}
+                            status={
+                                exportProgress.status === 'error'
+                                    ? 'exception'
+                                    : 'active'
+                            }
+                            format={() => exportProgress.step}
+                        />
+                    </div>
+                )}
                 <Button
                     icon={<FolderOpenOutlined />}
                     onClick={handleOpenFolder}
@@ -251,6 +303,15 @@ export default function ReportExport() {
                 >
                     导出报表
                 </Button>
+                {exporting && (
+                    <Button
+                        danger
+                        onClick={handleCancelExport}
+                        disabled={!exporting}
+                    >
+                        取消导出
+                    </Button>
+                )}
             </Space>
         </div>
     );

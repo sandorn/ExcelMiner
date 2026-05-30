@@ -2,6 +2,53 @@
 
 All notable changes to ExcelMiner will be documented in this file.
 
+## [0.8.0] — 2026-05-30
+
+### Added
+
+- **插件化引擎架构**：`EnginePlugin` trait + `EngineRegistry` 运行时动态加载 `.dll` 插件
+  - 新增 `plugins/` 目录 + 示例插件模板 + 开发指南
+  - 内置 4 引擎通过 `BuiltinAdapter` 适配器零改动接入
+  - `list_engines` Tauri 命令支持前端动态获取可用引擎
+- **可视化仪表盘**：`Dashboard.tsx` 页面组件 + `get_dashboard_data` 命令
+  - KPI 卡片行（营业收入/EBITDA/现金流/费用率）
+  - YTD 月度趋势折线图、业态占比环形图、公司对比柱状图
+  - AI 分析摘要卡片，优先使用实际数据，无数据时回退演示数据
+- **通用重试策略**：`RetryPolicy` 工具（指数退避 + 随机抖动 + 可配置上限）
+- **配置层级合并**：`TuningConfig`（超时/重试/并发）+ 环境变量覆盖（`EXCELMINER_API_URL` 等 6 项）
+- **日志系统增强**：
+  - `logger.rs` 统一初始化 + 每日日志文件 + 超 100MB 自动清理最旧 20%
+  - `log_sanitizer.rs` 安全脱敏（API Key / Token / 路径）
+- **CI/CD 流水线**：`.github/workflows/ci.yml`
+  - Rust: fmt / clippy / test / tarpaulin / cargo-audit
+  - 前端: tsc / eslint / prettier / vitest --coverage
+  - 构建矩阵 + artifact 上传
+- **前端工程化**：
+  - ESLint + Prettier 配置（`.eslintrc.json` / `.prettierrc`）
+  - `@ant-design/charts` 图表库
+  - `vitest.config.ts` 80% 覆盖率阈值
+  - `package.json` 新增 lint / format / test:coverage 脚本
+- **语义化发布**：`.releaserc.json` semantic-release 配置
+- **辅助脚本**：`scripts/run-all-tests.ps1` + `scripts/release.ps1`
+- **导出进度 + 取消**：`export-progress` 事件 + `cancel_export` 命令 + 前端进度条
+- **API Key 解析**：`resolve_api_key()` 项目配置 → 环境变量 `EXCELMINER_API_KEY` 兜底
+
+### Changed
+
+- `import_cmd` 引擎调度从硬编码 `get_engine()` 改为 `EngineRegistry.find()`
+- `AIAnalyzer` 日志中 API Key 改用 `sanitize_key()` 脱敏输出（首4尾4）
+- 公司分析并发数从硬编码 `Semaphore(3)` 改为 `TuningConfig.max_concurrent_requests`
+- `AIAnalyzer::new()` 新增 `with_timeout()` 方法，超时秒数可配置
+- `MainPage` 新增 Tabs（工作流 / 仪表盘）
+- `AppState` 新增 `engine_registry` 和 `export_cancel_flag` 字段
+
+### Removed
+
+- `import_cmd` 中硬编码的 `get_engine()` 匹配逻辑（已替换为注册表查找）
+- `tauri.conf.json` 中无效的 `macOS` / `linux` bundle 配置项
+
+---
+
 ## [0.7.0] — 2026-05-30
 
 ### Added

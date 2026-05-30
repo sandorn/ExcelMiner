@@ -2,7 +2,8 @@
 
 use std::process::Command;
 
-use tauri::State;
+use tauri::{Emitter, State, Window};
+use std::sync::atomic::Ordering;
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
 use crate::commands::project_cmd::AppState;
@@ -13,7 +14,11 @@ use crate::services::report_writer::ReportWriter;
 #[tauri::command]
 pub async fn export_report(
     state: State<'_, AppState>,
+    window: Window,
 ) -> Result<String, AppError> {
+    // 重置取消标记
+    state.export_cancel_flag.store(false, Ordering::SeqCst);
+
     let project_guard = state.current_project.lock().await;
     let project = project_guard
         .as_ref()
@@ -27,6 +32,19 @@ pub async fn export_report(
     let agg_results = state.aggregation_results.lock().await;
     let ai_results = state.analysis_results.lock().await;
 
+    // 开始写入前发送进度事件
+    let _ = window.emit("export-progress", serde_json::json!({
+        "step": "写入报表",
+        "progress": 0.0,
+        "status": "running",
+    }));
+
+    // 检查是否被取消（在写入前再次检查）
+    if state.export_cancel_flag.load(Ordering::SeqCst) {
+        tracing::info!("导出被用户取消");
+        return Err(AppError::Other("导出已取消".into()));
+    }
+
     ReportWriter::write_summary(
         &project.output_file,
         &agg_results,
@@ -36,7 +54,22 @@ pub async fn export_report(
         project.month,
     )?;
 
+    // 完成后发送完成事件
+    let _ = window.emit("export-progress", serde_json::json!({
+        "step": "完成",
+        "progress": 1.0,
+        "status": "done",
+    }));
+
     Ok(output_path)
+}
+
+/// 取消正在进行的导出操作
+#[tauri::command]
+pub async fn cancel_export(state: State<'_, AppState>) -> Result<(), AppError> {
+    state.export_cancel_flag.store(true, Ordering::SeqCst);
+    tracing::info!("用户请求取消导出");
+    Ok(())
 }
 
 /// 复制文本到剪贴板（使用 Tauri clipboard 插件，安全无注入风险）

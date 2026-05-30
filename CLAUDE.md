@@ -40,13 +40,14 @@ npm run tauri build
 
 | 文件                                                   | 作用                                                                                                                  |
 | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
-| `src/stores/appStore.ts`                               | Zustand 全局状态（project/appConfig/aggregationResults/analysisResults/currentStep/lastError）                    |
-| `src/pages/MainPage.tsx`                               | **主界面** — 单页面一体化（配置+控制+日志），~500行                                                                  |
-| `src/hooks/useAggregation.ts`                          | 数据汇总 hook（invoke + listen 封装）                                                                                |
-| `src/hooks/useAnalysis.ts`                             | AI 分析 hook（板块分析 + 公司分析，进度格式化）                                                                      |
-| `src/utils/format.ts`                                  | 工具函数（formatElapsed / timestamp / formatProgress）                                                              |
-| `src/__tests__/`                                       | Vitest 前端测试（store 8例 + 工具函数 6例）                                                                         |
-| `src/pages/ProjectSetup.tsx`                           | [旧] Step 1 — 项目创建/打开（已废弃，保留兼容）                                                                      |
+| `src/stores/appStore.ts`                               | Zustand 全局状态（project/appConfig/aggregationResults/analysisResults/currentStep/lastError）                        |
+| `src/pages/MainPage.tsx`                               | **主界面** — Tabs 切换（工作流 + 仪表盘），~500行                                                                     |
+| `src/pages/Dashboard.tsx`                              | **仪表盘** — KPI卡片 + 折线图/饼图/柱状图 + AI摘要                                                                    |
+| `src/hooks/useAggregation.ts`                          | 数据汇总 hook（invoke + listen 封装）                                                                                 |
+| `src/hooks/useAnalysis.ts`                             | AI 分析 hook（板块分析 + 公司分析，进度格式化）                                                                       |
+| `src/utils/format.ts`                                  | 工具函数（formatElapsed / timestamp / formatProgress）                                                                |
+| `src/__tests__/`                                       | Vitest 前端测试（store 8例 + 工具函数 6例）                                                                           |
+| `src/pages/ProjectSetup.tsx`                           | [旧] Step 1 — 项目创建/打开（已废弃，保留兼容）                                                                       |
 | `src/pages/DataImport.tsx`                             | [旧] Step 2 — 数据预览 + 一键汇总（保留兼容）                                                                         |
 | `src/pages/AIAnalysis.tsx`                             | [旧] Step 3 — AI 分析执行 + 结果展示（保留兼容）                                                                      |
 | `src/pages/ReportExport.tsx`                           | [旧] Step 4 — 导出 xlsx + 复制 PPT 文案（保留兼容）                                                                   |
@@ -56,8 +57,10 @@ npm run tauri build
 | `src-tauri/src/commands/project_cmd.rs`                | 项目 CRUD（create/open/save/get_default_config）+ AppState 定义                                                       |
 | `src-tauri/src/commands/import_cmd.rs`                 | 数据导入（preview_import/execute_aggregation）                                                                        |
 | `src-tauri/src/commands/analysis_cmd.rs`               | AI 分析（5个命令：execute_segment_analysis/execute_company_analysis/execute_analysis/test_api_connection/read_dskey） |
-| `src-tauri/src/commands/export_cmd.rs`                 | 报表导出（export_report/copy_to_clipboard/open_in_explorer/open_log_folder）                                          |
+| `src-tauri/src/commands/export_cmd.rs`                 | 报表导出（export_report/cancel_export/copy_to_clipboard/open_in_explorer/open_log_folder）                            |
+| `src-tauri/src/commands/dashboard_cmd.rs`              | 仪表盘数据（get_dashboard_data）                                                                                      |
 | `src-tauri/src/services/data_aggregator.rs`            | AggregationEngine trait + EngineType 枚举（4引擎调度）                                                                |
+| `src-tauri/src/services/engine_plugin.rs`              | 插件化引擎（EnginePlugin trait + EngineRegistry + BuiltinAdapter）                                                    |
 | `src-tauri/src/services/data_aggregator/insurance.rs`  | 保险业态汇总引擎                                                                                                      |
 | `src-tauri/src/services/data_aggregator/hotel.rs`      | 酒店业态汇总引擎                                                                                                      |
 | `src-tauri/src/services/data_aggregator/commercial.rs` | 商写业态汇总引擎                                                                                                      |
@@ -67,35 +70,41 @@ npm run tauri build
 | `src-tauri/src/services/excel_reader.rs`               | calamine 泛型封装 ExcelReader<RS>                                                                                     |
 | `src-tauri/src/services/number_parser.rs`              | 文本→数字解析（千分位/百分号/金额前缀/表达式求值）                                                                    |
 | `src-tauri/src/services/quality_checker.rs`            | QualityChecker 结构体：分析内容验证+质量评估+重试上限                                                                 |
-| `src-tauri/src/services/report_writer.rs`              | xlsx 报表写入（调用 XlsxWriter 按引擎写入 + AI分析 Sheet）                                                           |
-| `src-tauri/src/services/xlsx_writer.rs`               | **Route 2** 纯 Rust xlsx 写入引擎（ZIP+XML 直接操作，~1100行，SST追加模式）                                          |
+| `src-tauri/src/services/report_writer.rs`              | xlsx 报表写入（调用 XlsxWriter 按引擎写入 + AI分析 Sheet）                                                            |
+| `src-tauri/src/services/xlsx_writer.rs`                | **Route 2** 纯 Rust xlsx 写入引擎（ZIP+XML 直接操作，~1100行，SST追加模式）                                           |
 | `src-tauri/src/utils/date_utils.rs`                    | 日期解析（parse_month/parse_date_from_folder）+ YTD月份计算（ytd_months）                                             |
-| `src-tauri/src/config.rs`                              | AppConfig/GeneralConfig/DefaultConfig（全局配置）                                                                     |
+| `src-tauri/src/utils/logger.rs`                        | 日志初始化 + 每日轮转 + 超量清理                                                                                      |
+| `src-tauri/src/utils/retry.rs`                         | 通用重试策略 RetryPolicy（指数退避 + 抖动）                                                                           |
+| `src-tauri/src/utils/log_sanitizer.rs`                 | 安全日志脱敏（API Key / Token / 路径）                                                                                |
+| `src-tauri/src/config.rs`                              | AppConfig/GeneralConfig/DefaultConfig/TuningConfig（全局配置 + 环境变量覆盖）                                         |
 | `src-tauri/src/models/project.rs`                      | Project/Company/BusinessType/AIConfig                                                                                 |
 | `src-tauri/src/models/analysis.rs`                     | AnalysisResult/AnalysisQuality（4维度评分，满分8分）/TokenUsage/ProgressUpdate/PreviewData/AggregationResult          |
 | `src-tauri/src/models/indicator.rs`                    | IndicatorDef/IndicatorValue/IndicatorSet                                                                              |
 | `resources/companies.toml`                             | 子公司预定义模板（9家公司3个业态）                                                                                    |
 | `resources/prompts/*.md`                               | AI 系统提示词（保险分析/酒店分析/商写分析/财务分析师），build.rs 自动同步到 src-tauri/resources/                      |
 
-## Tauri 命令清单（15个）
+## Tauri 命令清单（18个）
 
-| 分组     | 命令                       | 参数                                                  | 返回                     | 说明                                     |
-| -------- | -------------------------- | ----------------------------------------------------- | ------------------------ | ---------------------------------------- |
-| project  | `create_project`           | state, name, year, month, data_folder, output_file    | `Project`                | 生成 .project.toml                       |
-| project  | `open_project`             | state, path                                           | `Project`                | 反序列化 .project.toml                   |
-| project  | `save_project`             | state, project                                        | `()`                     | 序列化写入 .project.toml                 |
-| project  | `get_default_config`       | state                                                 | `AppConfig`              | 返回全局配置                             |
-| import   | `preview_import`           | project, engine                                       | `PreviewData`            | 预览引擎发现的数据                       |
-| import   | `execute_aggregation`      | state, project, engines, window                       | `Vec<AggregationResult>` | emit progress 事件                       |
-| analysis | `execute_segment_analysis` | state, project, business_types, custom_prompt, window | `Vec<AnalysisResult>`    | 阶段一：板块业态分析（跳过质量检查）     |
-| analysis | `execute_company_analysis` | state, project, window                                | `Vec<AnalysisResult>`    | 阶段二：子公司经营指标分析（带质量检查） |
-| analysis | `execute_analysis`         | state, project, business_types, custom_prompt, window | `Vec<AnalysisResult>`    | 两阶段完整分析（板块+公司）              |
-| analysis | `test_api_connection`      | api_url, api_key, model                               | `String`                 | 测试API连通性（返回"连接成功"）          |
-| analysis | `read_dskey`               | section                                               | `Option<String>`         | 从 ~/.dskey 文件读取指定分组的 API Key   |
-| export   | `export_report`            | state                                                 | `String`(路径)           | 写入xlsx                                 |
-| export   | `copy_to_clipboard`        | app_handle, text                                      | `()`                     | 复制PPT文案到剪贴板                      |
-| export   | `open_in_explorer`         | path                                                  | `()`                     | 打开文件浏览器定位                       |
-| export   | `open_log_folder`          | (无)                                                  | `String`(日志路径)       | 用系统关联程序打开日志目录               |
+| 分组      | 命令                       | 参数                                                  | 返回                     | 说明                                     |
+| --------- | -------------------------- | ----------------------------------------------------- | ------------------------ | ---------------------------------------- |
+| project   | `create_project`           | state, name, year, month, data_folder, output_file    | `Project`                | 生成 .project.toml                       |
+| project   | `open_project`             | state, path                                           | `Project`                | 反序列化 .project.toml                   |
+| project   | `save_project`             | state, project                                        | `()`                     | 序列化写入 .project.toml                 |
+| project   | `get_default_config`       | state                                                 | `AppConfig`              | 返回全局配置                             |
+| import    | `preview_import`           | project, engine                                       | `PreviewData`            | 预览引擎发现的数据                       |
+| import    | `execute_aggregation`      | state, project, engines, window                       | `Vec<AggregationResult>` | emit progress 事件                       |
+| import    | `list_engines`             | state                                                 | `Vec<Value>`             | 列出所有可用引擎（内置+插件）            |
+| analysis  | `execute_segment_analysis` | state, project, business_types, custom_prompt, window | `Vec<AnalysisResult>`    | 阶段一：板块业态分析（跳过质量检查）     |
+| analysis  | `execute_company_analysis` | state, project, window                                | `Vec<AnalysisResult>`    | 阶段二：子公司经营指标分析（带质量检查） |
+| analysis  | `execute_analysis`         | state, project, business_types, custom_prompt, window | `Vec<AnalysisResult>`    | 两阶段完整分析（板块+公司）              |
+| analysis  | `test_api_connection`      | api_url, api_key, model                               | `String`                 | 测试API连通性（返回"连接成功"）          |
+| analysis  | `read_dskey`               | section                                               | `Option<String>`         | 从 ~/.dskey 文件读取指定分组的 API Key   |
+| export    | `export_report`            | state                                                 | `String`(路径)           | 写入xlsx                                 |
+| export    | `copy_to_clipboard`        | app_handle, text                                      | `()`                     | 复制PPT文案到剪贴板                      |
+| export    | `open_in_explorer`         | path                                                  | `()`                     | 打开文件浏览器定位                       |
+| export    | `open_log_folder`          | (无)                                                  | `String`(日志路径)       | 用系统关联程序打开日志目录               |
+| export    | `cancel_export`            | state                                                 | `()`                     | 取消正在进行的导出                       |
+| dashboard | `get_dashboard_data`       | state                                                 | `DashboardData`          | 获取仪表盘 KPI/图表/AI摘要数据           |
 
 ## 关键设计决策
 
@@ -108,10 +117,21 @@ npm run tauri build
 - `aggregation_results: Mutex<Vec<AggregationResult>>` — 跨步骤共享的汇总结果
 - `analysis_results: Mutex<Vec<AnalysisResult>>` — 跨步骤共享的分析结果
 - `_log_guard: Mutex<Option<WorkerGuard>>` — 日志文件写入 guard
+- `export_cancel_flag: Arc<AtomicBool>` — 导出取消标记
+- `engine_registry: Mutex<EngineRegistry>` — 插件引擎注册表（内置+动态加载）
 
 ### 汇总引擎（AggregationEngine trait）
 
 4个引擎实现同一 trait：`aggregate(project, sender) -> AggregationResult`，通过 `window.emit("aggregation-progress")` 向前端推送进度。引擎通过 `EngineType` 枚举区分：Insurance / Hotel / Commercial / Financial。
+
+### 插件化引擎（EnginePlugin trait + EngineRegistry）
+
+- `EnginePlugin` trait：插件必须实现的标准接口（`plugin_id` / `display_name` / `preview` / `execute`）
+- `EngineRegistry`：运行时扫描 `plugins/` 目录加载 `.dll`，通过 `libloading` 调用 `create_engine()` 工厂函数
+- `BuiltinAdapter<T>`：将内置 `AggregationEngine` 适配为 `EnginePlugin`，零改动接入
+- 新增引擎流程：创建 `cdylib` crate → 实现 `EnginePlugin` → 导出 `create_engine` → 放入 `plugins/` 目录
+
+### 仪表盘（Dashboard）
 
 ### AI 分析（AIAnalyzer）
 
@@ -186,16 +206,16 @@ npm run tauri build
 
 ## 测试
 
-| 文件                                  | 内容                                                                                        |
-| ------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `src-tauri/tests/test_core.rs`        | 数字解析（9例）、质量评分（6例）、日期工具（5例）、AI分析器（5例）                          |
-| `src-tauri/tests/test_aggregation.rs` | 各引擎预览+执行（ZIP+XML 构造合成 xlsx）                                                    |
-| `src-tauri/tests/test_analysis.rs`    | 质量评分按业态（4例）、AI提示词（3例）、报表写入（2例）、fixture读取（4例）、边界条件（4例） |
-| `src-tauri/tests/test_integration.rs` | 报表写入+读回验证、指标映射、日期解析、数字解析                                             |
-| `src-tauri/tests/test_real_data.rs`   | 真实 fixture 数据全引擎测试（7例）                                                          |
-| `src-tauri/tests/integration_test.rs` | 生产数据集成测试（周边污染 + 数据正确性 + 公式缓存清除）                                    |
-| `src-tauri/tests/test_xlsx_debug.rs`  | Excel 文件读写调试                                                                          |
-| `src-tauri/src/services/xlsx_writer.rs`（底部） | 12 个单元测试覆盖空工作簿、单元格修改、模板读写                                      |
+| 文件                                            | 内容                                                                                         |
+| ----------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `src-tauri/tests/test_core.rs`                  | 数字解析（9例）、质量评分（6例）、日期工具（5例）、AI分析器（5例）                           |
+| `src-tauri/tests/test_aggregation.rs`           | 各引擎预览+执行（ZIP+XML 构造合成 xlsx）                                                     |
+| `src-tauri/tests/test_analysis.rs`              | 质量评分按业态（4例）、AI提示词（3例）、报表写入（2例）、fixture读取（4例）、边界条件（4例） |
+| `src-tauri/tests/test_integration.rs`           | 报表写入+读回验证、指标映射、日期解析、数字解析                                              |
+| `src-tauri/tests/test_real_data.rs`             | 真实 fixture 数据全引擎测试（7例）                                                           |
+| `src-tauri/tests/integration_test.rs`           | 生产数据集成测试（周边污染 + 数据正确性 + 公式缓存清除）                                     |
+| `src-tauri/tests/test_xlsx_debug.rs`            | Excel 文件读写调试                                                                           |
+| `src-tauri/src/services/xlsx_writer.rs`（底部） | 12 个单元测试覆盖空工作簿、单元格修改、模板读写                                              |
 
 运行：`cd src-tauri && cargo test`（共 88 个测试）+ `npx vitest run`（前端 14 个测试）
 
