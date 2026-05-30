@@ -105,7 +105,41 @@ pub async fn open_project(
 
     let content = std::fs::read_to_string(&path)?;
     let config: ProjectConfig = toml::from_str(&content)?;
-    let project = Project::from_config(config);
+    let mut project = Project::from_config(config);
+
+    // 如果项目文件中 companies 为空，从注册表自动填充
+    if project.companies.is_empty() {
+        tracing::info!("项目 companies 为空，从公司注册表自动填充");
+        let registry = crate::services::company_registry::company_registry();
+        let mut companies = Vec::new();
+        for c in &registry.insurance {
+            companies.push(crate::models::project::Company {
+                name: c.name.clone(),
+                business_type: crate::models::project::BusinessType::Insurance,
+                regions: vec![],
+            });
+        }
+        for c in &registry.commercial {
+            companies.push(crate::models::project::Company {
+                name: c.name.clone(),
+                business_type: crate::models::project::BusinessType::Commercial,
+                regions: vec![],
+            });
+        }
+        for h in &registry.hotel {
+            companies.push(crate::models::project::Company {
+                name: h.name.clone(),
+                business_type: crate::models::project::BusinessType::Hotel,
+                regions: vec![],
+            });
+        }
+        project.companies = companies;
+        // 同步回写到 TOML
+        let project_config = project.to_config();
+        if let Ok(content) = toml::to_string_pretty(&project_config) {
+            let _ = std::fs::write(&path, &content);
+        }
+    }
 
     *state.current_project.lock().await = Some(project.clone());
 

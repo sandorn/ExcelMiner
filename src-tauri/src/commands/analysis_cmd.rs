@@ -53,10 +53,18 @@ pub async fn execute_segment_analysis(
             .collect();
 
         if companies.is_empty() {
+            tracing::info!(
+                "[板块分析] {}业态无匹配公司（project.companies={}），跳过",
+                bt, project.companies.len()
+            );
             continue;
         }
 
         let segment_name = format!("{}板块", bt);
+        tracing::info!(
+            "[板块分析] 开始分析 {} (公司数:{}, 第{}/{})",
+            segment_name, companies.len(), type_idx + 1, total_types
+        );
 
         // ✅ 与AardMiner/VBA原型一致：从汇总表行业Sheet直接读取单元格数据
         let user_data = read_segment_data(&project.output_file, &bt, project.month);
@@ -99,12 +107,17 @@ pub async fn execute_segment_analysis(
         };
 
         let _ = window.emit("analysis-progress", ProgressUpdate {
-            step: format!("板块分析: {} (第{}/{})", segment_name, type_idx + 1, total_types),
+            step: format!("板块分析: {} (第{}/{}) — 正在调用AI...", segment_name, type_idx + 1, total_types),
             progress: (type_idx as f64) / (total_types as f64),
             status: ProgressStatus::Running,
             company: Some(segment_name.clone()),
         });
 
+        tracing::info!(
+            "[板块分析] {} {} → 发送到 DeepSeek (system_prompt={}字, user_prompt={}字)",
+            segment_name, bt, system_prompt.chars().count(), user_prompt.chars().count()
+        );
+        let call_start = std::time::Instant::now();
         let result = analyzer
             .analyze_segment(
                 &system_prompt,
@@ -113,6 +126,11 @@ pub async fn execute_segment_analysis(
                 &bt.to_string(),
             )
             .await;
+        let call_ms = call_start.elapsed().as_millis();
+        tracing::info!(
+            "[板块分析] {} {} → API返回 耗时={}ms success={} content_len={} err={:?}",
+            segment_name, bt, call_ms, result.success, result.content.len(), result.error_message
+        );
 
         if !result.success {
             let _ = window.emit("analysis-progress", ProgressUpdate {
@@ -120,6 +138,13 @@ pub async fn execute_segment_analysis(
                 progress: (type_idx as f64) / (total_types as f64),
                 status: ProgressStatus::Error,
                 company: Some(segment_name),
+            });
+        } else {
+            let _ = window.emit("analysis-progress", ProgressUpdate {
+                step: format!("{} 分析完成 ({:.0}字, {}ms)", segment_name, result.content.len(), call_ms),
+                progress: (type_idx as f64 + 1.0) / (total_types as f64),
+                status: ProgressStatus::Running,
+                company: Some(segment_name.clone()),
             });
         }
 
@@ -273,9 +298,27 @@ pub async fn execute_company_analysis(
     }
 
     let mut all_results = Vec::new();
+    tracing::info!(
+        "[经营分析] 开始: {}家公司, 并发数=3, YTD月份={}, 序时进度={:.2}%",
+        total, ytd_months, progress_pct
+    );
     while let Some(task_result) = set.join_next().await {
         match task_result {
-            Ok(r) => all_results.push(r),
+            Ok(r) => {
+                let done = all_results.len() + 1;
+                let success = r.success;
+                let company = r.company_name.clone();
+                let score = r.quality_score;
+                let content_len = r.content.len();
+                let token_est = r.token_usage.as_ref().map(|t| t.total_tokens as u64 * 10).unwrap_or(0);
+                all_results.push(r);
+                tracing::info!(
+                    "[经营分析] [{}/{}] {} {} (est={}ms, score={}, len={}字)",
+                    done, total,
+                    if success { "✅" } else { "❌" },
+                    company, token_est, score, content_len
+                );
+            }
             Err(e) => {
                 tracing::error!("[经营分析] JoinSet 任务异常: {}", e);
             }
@@ -846,7 +889,15 @@ fn read_segment_data(
             read_industry_segment_data(output_path, "商写类", (1, 18, 1, 7), current_month)
         }
         BusinessType::Insurance => {
-            read_industry_segment_data(output_path, "保险类", (1, 25, 6, 8), current_month)
+            // 保险需同时读取: A1:D18 详细指标(人力/承保) + F1:H25 月度规模保费
+            let indicators = read_industry_segment_data(output_path, "保险类", (1, 18, 1, 4), current_month);
+            let monthly = read_industry_segment_data(output_path, "保险类", (1, 25, 6, 8), current_month);
+            match (indicators, monthly) {
+                (Some(ind), Some(mon)) => Some(format!("详细指标：\n{}\n月度规模保费：\n{}", ind, mon)),
+                (Some(ind), None) => Some(format!("详细指标：\n{}", ind)),
+                (None, Some(mon)) => Some(mon),
+                (None, None) => None,
+            }
         }
         BusinessType::Hotel => {
             read_hotel_segment_data(output_path, current_month)

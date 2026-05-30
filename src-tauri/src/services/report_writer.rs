@@ -62,6 +62,11 @@ fn write_config_sheet(
 ) -> Result<(), AppError> {
     w.set_number("填写页", 1, 2, month as f64)?;  // A2
     w.set_number("填写页", 1, 4, year as f64)?;   // A4
+    // A1 公式 =A2&A3，写入月份后重设公式缓存值
+    let month_str = format!("{}月", month);
+    w.set_formula_with_value("填写页", 1, 1, "=A2&A3", &month_str)?;
+    // 填写页只有简单公式，不清除缓存（避免 A1 显示为空）
+    w.clear_dirty("填写页");
     // C1 写项目名会修改 SST → 暂时跳过，模板已有正确值
     // w.set_string("填写页", 3, 1, project_name)?;
     let _ = project_name; // suppress unused warning
@@ -383,10 +388,31 @@ fn str_preview(s: &str, max_chars: usize) -> &str {
 
 /// 清理文本中的非法 XML 字符（0x00-0x08, 0x0B-0x0C, 0x0E-0x1F）
 fn sanitize_text(text: &str) -> String {
-    text.chars()
+    let cleaned: String = text.chars()
         .map(|c| match c {
             '\x00'..='\x08' | '\x0B' | '\x0C' | '\x0E'..='\x1F' => ' ',
             _ => c,
         })
-        .collect()
+        .collect();
+    // 压缩连续空行：最多保留一个空行，去除首尾空行
+    let mut result = String::with_capacity(cleaned.len());
+    let mut prev_empty = false;
+    for line in cleaned.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            if !prev_empty && !result.is_empty() {
+                result.push('\n');
+                prev_empty = true;
+            }
+        } else {
+            result.push_str(line);
+            result.push('\n');
+            prev_empty = false;
+        }
+    }
+    // 去除尾部空行
+    while result.ends_with('\n') {
+        result.pop();
+    }
+    result
 }

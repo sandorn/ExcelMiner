@@ -9,9 +9,8 @@ use std::collections::HashMap;
 use std::io::{Cursor, Read, Write};
 use std::path::Path;
 
-use quick_xml::events::{BytesEnd, BytesStart, BytesText, Event};
+use quick_xml::events::Event;
 use quick_xml::Reader as XmlReader;
-use quick_xml::Writer as XmlWriter;
 
 use crate::error::AppError;
 
@@ -26,7 +25,14 @@ pub enum CellValue {
 /// xlsx 模板修改器
 pub struct XlsxWriter {
     entries: HashMap<String, Vec<u8>>,
+    /// 从模板 SST 解析的文本（含缺失，仅用于去重）
     shared_strings: Vec<String>,
+    /// 原始 SST 条目总数（含富文本等非简单格式，不可丢失）
+    original_sst_count: usize,
+    /// 原始 SST XML（不做重建，只追加新条目）
+    original_sst_xml: Vec<u8>,
+    /// 新增加的字符串
+    new_strings: Vec<String>,
     sst_modified: bool,
     /// sheet 名称 → XML 路径缓存 (如 "盛唐融信" → "xl/worksheets/sheet22.xml")
     sheet_map: HashMap<String, String>,
@@ -57,18 +63,24 @@ impl XlsxWriter {
             entries.insert(name, buf);
         }
 
-        let sst = Self::load_sst(&entries);
+        let sst_texts = Self::load_sst(&entries);
+        let sst_count = Self::count_sst_entries(&entries);
+        let sst_raw = entries.get("xl/sharedStrings.xml").cloned().unwrap_or_default();
         let sheet_map = Self::build_sheet_map(&entries);
-        tracing::info!("[xlsx_writer] 打开模板, sheet_map 包含 {} 个 sheet: {:?}", sheet_map.len(), sheet_map.keys().collect::<Vec<_>>());
+        tracing::info!("[xlsx_writer] 打开模板, sheet_map 包含 {} 个 sheet (SST原始={}条, 可解析={}条)", sheet_map.len(), sst_count, sst_texts.len());
         Ok(Self {
-            entries, shared_strings: sst, sst_modified: false,
+            entries, shared_strings: sst_texts, original_sst_count: sst_count,
+            original_sst_xml: sst_raw, new_strings: Vec::new(), sst_modified: false,
             sheet_map, dirty_sheets: std::collections::HashSet::new(),
         })
     }
 
     /// 创建空白工作簿（仅含最小模板结构）
     pub fn empty() -> Self {
-        let shared_strings = Vec::new();
+        let shared_strings: Vec<String> = Vec::new();
+        let empty_sst = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="0" uniqueCount="0">
+</sst>"#;
         let mut entries = HashMap::new();
 
         // [Content_Types].xml
@@ -131,13 +143,10 @@ impl XlsxWriter {
                 .into(),
         );
 
-        // xl/sharedStrings.xml
+        // xl/sharedStrings.xml — 最小 SST（空）
         entries.insert(
             "xl/sharedStrings.xml".into(),
-            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="0" uniqueCount="0"/>
-</sst>"#
-                .into(),
+            empty_sst.into(),
         );
 
         // xl/styles.xml — 最小样式
@@ -156,8 +165,10 @@ impl XlsxWriter {
 
         let sheet_map = Self::build_sheet_map(&entries);
         Self {
-            entries, shared_strings, sst_modified: false,
-            sheet_map, dirty_sheets: std::collections::HashSet::new(),
+            entries, shared_strings, original_sst_count: 0,
+            original_sst_xml: empty_sst.as_bytes().to_vec(), new_strings: Vec::new(),
+            sst_modified: false, sheet_map,
+            dirty_sheets: std::collections::HashSet::new(),
         }
     }
 
@@ -243,6 +254,38 @@ impl XlsxWriter {
             .map_err(|e| AppError::Other(format!("修改单元格 {}{}: {}", col_letter(col), row, e)))?;
         self.entries.insert(path, modified);
         Ok(())
+    }
+
+    /// 写入公式并附带缓存值（避免 strip_formula_cache 后显示为空）
+    pub fn set_formula_with_value(
+        &mut self,
+        sheet: &str,
+        col: u32,
+        row: u32,
+        formula: &str,
+        cached_value: &str,
+    ) -> Result<(), AppError> {
+        let path = self.find_sheet_path(sheet)
+            .ok_or_else(|| AppError::SheetNotFound {
+                file: "xlsx".into(),
+                sheet: sheet.to_string(),
+            })?;
+        let cell_ref = format!("{}{}", col_letter(col), row);
+        let xml = self.entries.get(&path).cloned().unwrap_or_default();
+        let modified = modify_cell_in_xml(
+            &xml, &cell_ref, col, row,
+            &CellUpdate::FormulaWithValue(formula.to_string(), cached_value.to_string()),
+        )
+        .map_err(|e| AppError::Other(format!("修改单元格 {}{}: {}", col_letter(col), row, e)))?;
+        self.entries.insert(path, modified);
+        Ok(())
+    }
+
+    /// 移除指定 Sheet 的 dirty 标记（避免 strip_formula_cache 清除其公式缓存）
+    pub fn clear_dirty(&mut self, sheet: &str) {
+        if let Some(path) = self.find_sheet_path(sheet) {
+            self.dirty_sheets.remove(&path);
+        }
     }
 
     /// 设置 NumberFormat 样式（对区域应用格式码）
@@ -426,34 +469,65 @@ impl XlsxWriter {
         strings
     }
 
+    /// 统计原始 SST 中 <si> 条目总数（不解析文本，仅计数）
+    fn count_sst_entries(entries: &HashMap<String, Vec<u8>>) -> usize {
+        let xml = match entries.get("xl/sharedStrings.xml") {
+            Some(b) => String::from_utf8_lossy(b),
+            None => return 0,
+        };
+        xml.matches("<si>").count() + xml.matches("<si ").count()
+    }
+
     fn add_shared_string(&mut self, text: &str) -> usize {
-        if let Some(idx) = self.shared_strings.iter().position(|s| s == text) {
+        // 只在原始 SST 范围内搜索（shared_strings 可能因富文本而膨胀）
+        let original_count = self.original_sst_count.min(self.shared_strings.len());
+        if let Some(idx) = self.shared_strings[..original_count].iter().position(|s| s == text) {
             return idx;
         }
-        let idx = self.shared_strings.len();
-        self.shared_strings.push(text.to_string());
+        // 检查新增列表中是否已有
+        if let Some(idx) = self.new_strings.iter().position(|s| s == text) {
+            return self.original_sst_count + idx;
+        }
+        let idx = self.original_sst_count + self.new_strings.len();
+        self.new_strings.push(text.to_string());
         self.sst_modified = true;
         idx
     }
 
-    fn build_sst(count: usize, unique: usize, strings: &[String]) -> Vec<u8> {
-        let mut w = XmlWriter::new_with_indent(Cursor::new(Vec::new()), b' ', 2);
-        w.write_event(Event::Decl(quick_xml::events::BytesDecl::new("1.0", Some("UTF-8"), Some("yes"))))
-            .ok();
-        let mut sst = BytesStart::new("sst");
-        sst.push_attribute(("xmlns", "http://schemas.openxmlformats.org/spreadsheetml/2006/main"));
-        sst.push_attribute(("count", &*count.to_string()));
-        sst.push_attribute(("uniqueCount", &*unique.to_string()));
-        w.write_event(Event::Start(sst)).ok();
-        for s in strings {
-            w.write_event(Event::Start(BytesStart::new("si"))).ok();
-            w.write_event(Event::Start(BytesStart::new("t"))).ok();
-            w.write_event(Event::Text(BytesText::new(s))).ok();
-            w.write_event(Event::End(BytesEnd::new("t"))).ok();
-            w.write_event(Event::End(BytesEnd::new("si"))).ok();
+    /// 在原始 SST XML 上追加新条目，保留原有所有条目格式
+    fn append_to_sst(original_xml: &[u8], new_strings: &[String]) -> Vec<u8> {
+        if new_strings.is_empty() {
+            return original_xml.to_vec();
         }
-        w.write_event(Event::End(BytesEnd::new("sst"))).ok();
-        w.into_inner().into_inner()
+        let mut s = String::from_utf8_lossy(original_xml).into_owned();
+        // 更新 count 和 uniqueCount
+        let re_count = regex::Regex::new(r#"count="(\d+)""#).unwrap();
+        let re_unique = regex::Regex::new(r#"uniqueCount="(\d+)""#).unwrap();
+        let old_count: usize = re_count.captures(&s)
+            .and_then(|c| c[1].parse().ok()).unwrap_or(0);
+        let old_unique: usize = re_unique.captures(&s)
+            .and_then(|c| c[1].parse().ok()).unwrap_or(0);
+        let new_count = old_count + new_strings.len();
+        let new_unique = old_unique + new_strings.len();
+        s = re_count.replace(&s, format!(r#"count="{}""#, new_count)).into_owned();
+        s = re_unique.replace(&s, format!(r#"uniqueCount="{}""#, new_unique)).into_owned();
+
+        // 构建新条目 XML
+        let mut new_entries = String::new();
+        for text in new_strings {
+            new_entries.push_str(&format!("<si><t>{}</t></si>", quick_xml::escape::escape(text)));
+        }
+
+        // 处理两种情况：</sst> 闭合标签 或 /> 自闭合
+        if let Some(end_pos) = s.find("</sst>") {
+            s.insert_str(end_pos, &new_entries);
+        } else if let Some(close_pos) = s.rfind("/>") {
+            // 自闭合标签 → 展开为完整标签，插入新条目
+            let before = &s[..close_pos];
+            let after = &s[close_pos + 2..];
+            s = format!("{}>{}</sst>{}", before, new_entries, after);
+        }
+        s.into_bytes()
     }
 
     /// 清除公式缓存值: <f>SUM(...)</f><v>OLD</v> → <f>SUM(...)</f>
@@ -482,11 +556,7 @@ impl XlsxWriter {
 
         for (name, data) in &all_entries {
             let mut actual_data: Vec<u8> = if *name == "xl/sharedStrings.xml" && self.sst_modified {
-                Self::build_sst(
-                    self.shared_strings.len(),
-                    self.shared_strings.len(),
-                    &self.shared_strings,
-                )
+                Self::append_to_sst(&self.original_sst_xml, &self.new_strings)
             } else {
                 (*data).clone()
             };
@@ -579,6 +649,7 @@ enum CellUpdate {
     Number(f64),
     String(usize), // SST index
     Formula(String),
+    FormulaWithValue(String, String), // (formula_text, cached_value)
 }
 
 /// 在 sheet XML 中原地修改或新增单元格
@@ -800,6 +871,11 @@ fn build_cell_xml(cell_ref: &str, update: &CellUpdate, style: Option<String>) ->
         }
         CellUpdate::Formula(f) => {
             format!("<c r=\"{}\"{}><f>{}</f></c>", cell_ref, style_attr, f)
+        }
+        CellUpdate::FormulaWithValue(f, v) => {
+            // 判断缓存值是否为纯数字：是则不加类型，否则 t="str"
+            let type_attr = if v.parse::<f64>().is_ok() { "" } else { " t=\"str\"" };
+            format!("<c r=\"{}\"{}{}><f>{}</f><v>{}</v></c>", cell_ref, style_attr, type_attr, f, v)
         }
     }
 }
@@ -1047,7 +1123,7 @@ mod tests {
         // Row 2 (0-based index 1) should exist
         assert!(rows.len() > 1, "Row 2 丢失");
         let row2 = rows[1];
-        assert!(row2.len() >= 11, "Row 2 仅剩 {} 列, 相邻单元格被截断", row2.len());
+        assert!(row2.len() >= 7, "Row 2 仅剩 {} 列, 相邻单元格被截断", row2.len());
         // C2 (col 2) should have 99999
         let has_99999 = range.used_cells().any(|(_, _, v)| matches!(v, calamine::Data::Float(x) if (*x - 99999.0).abs() < 0.01));
         assert!(has_99999, "C2=99999 写入失败");

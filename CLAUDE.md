@@ -63,7 +63,8 @@ npm run tauri build
 | `src-tauri/src/services/excel_reader.rs`               | calamine 泛型封装 ExcelReader<RS>                                                                                     |
 | `src-tauri/src/services/number_parser.rs`              | 文本→数字解析（千分位/百分号/金额前缀/表达式求值）                                                                    |
 | `src-tauri/src/services/quality_checker.rs`            | QualityChecker 结构体：分析内容验证+质量评估+重试上限                                                                 |
-| `src-tauri/src/services/report_writer.rs`              | xlsx 报表写入（加载模板 → 按引擎类型写入指定单元格 + AI分析Sheet）                                                    |
+| `src-tauri/src/services/report_writer.rs`              | xlsx 报表写入（调用 XlsxWriter 按引擎写入 + AI分析 Sheet）                                                           |
+| `src-tauri/src/services/xlsx_writer.rs`               | **Route 2** 纯 Rust xlsx 写入引擎（ZIP+XML 直接操作，~1100行，SST追加模式）                                          |
 | `src-tauri/src/utils/date_utils.rs`                    | 日期解析（parse_month/parse_date_from_folder）+ YTD月份计算（ytd_months）                                             |
 | `src-tauri/src/config.rs`                              | AppConfig/GeneralConfig/DefaultConfig（全局配置）                                                                     |
 | `src-tauri/src/models/project.rs`                      | Project/Company/BusinessType/AIConfig                                                                                 |
@@ -126,7 +127,7 @@ npm run tauri build
 - 板块分析仅使用**对应业态引擎**的汇总数据（保险/酒店/商写）
 - 公司分析仅使用**经营报表引擎**的汇总数据
 
-并发执行：公司分析阶段使用 `JoinSet` + `Semaphore(18)` 全并发，`Arc<AIAnalyzer>` 共享分析器实例，`Arc<AtomicUsize>` 追踪进度
+并发执行：公司分析阶段使用 `JoinSet` + `Semaphore(3)` 全并发，`Arc<AIAnalyzer>` 共享分析器实例，`Arc<AtomicUsize>` 追踪进度
 
 配置参数：batch_size=3、max_retries=2、quality_threshold=8（满分8）、temperature=0.3、max_tokens=1500、HTTP 超时 60s
 质量评分：4维度（revenue/ebitda/cashflow/expense），每项2分，满分8分。EBITDA维度支持 ebitda/GOP/扣非净利润 三选一
@@ -169,21 +170,39 @@ npm run tauri build
 - 全局配置：`%APPDATA%/ExcelMiner/config.toml`
 - 日志：`%APPDATA%/ExcelMiner/logs/app.log`
 
+## xlsx 写入引擎（Route 2）
+
+基于 ZIP + quick-xml 直接操作 xlsx XML，替代 umya-spreadsheet（该库加载复杂模板时 C 库 segfault）。
+
+- **SST（共享字符串表）**：`append_to_sst()` 在原始 XML 上追加新条目并更新计数，保留富文本等所有原有格式，防止索引偏移
+- **公式缓存**：`strip_formula_cache()` 清除被修改 Sheet 中的公式缓存，强制 Excel 重算；`clear_dirty()` 可豁免特定 Sheet
+- **公式写入**：`set_formula_with_value()` 同时写入公式和缓存值，避免清除后显示为空
+- **单元格操作**：`set_number()` / `set_string()` / `set_formula()` / `set_number_format()`
+- **原子保存**：临时文件 + rename，文件被锁时回退到 copy
+
 ## 测试
 
-| 文件                                  | 内容                                                                               |
-| ------------------------------------- | ---------------------------------------------------------------------------------- |
-| `src-tauri/tests/test_core.rs`        | 数字解析（9个用例）、质量评分（6个用例）、日期工具（5个用例）、AI分析器（5个用例） |
-| `src-tauri/tests/test_aggregation.rs` | 各引擎预览+执行                                                                    |
-| `src-tauri/tests/test_xlsx_debug.rs`  | Excel 文件读取调试                                                                 |
+| 文件                                  | 内容                                                                                        |
+| ------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `src-tauri/tests/test_core.rs`        | 数字解析（9例）、质量评分（6例）、日期工具（5例）、AI分析器（5例）                          |
+| `src-tauri/tests/test_aggregation.rs` | 各引擎预览+执行（ZIP+XML 构造合成 xlsx）                                                    |
+| `src-tauri/tests/test_analysis.rs`    | 质量评分按业态（4例）、AI提示词（3例）、报表写入（2例）、fixture读取（4例）、边界条件（4例） |
+| `src-tauri/tests/test_integration.rs` | 报表写入+读回验证、指标映射、日期解析、数字解析                                             |
+| `src-tauri/tests/test_real_data.rs`   | 真实 fixture 数据全引擎测试（7例）                                                          |
+| `src-tauri/tests/integration_test.rs` | 生产数据集成测试（周边污染 + 数据正确性 + 公式缓存清除）                                    |
+| `src-tauri/tests/test_xlsx_debug.rs`  | Excel 文件读写调试                                                                          |
+| `src-tauri/src/services/xlsx_writer.rs`（底部） | 12 个单元测试覆盖空工作簿、单元格修改、模板读写                                      |
 
-运行：`cd src-tauri && cargo test`
+运行：`cd src-tauri && cargo test`（共 88 个测试）
 
 ## 注意事项
 
 - 项目约定使用中文注释和文档
-- 所有路径使用 Windows 风格（`\`），跨平台命令需适配
+- `index.html` 为 Vite 入口（必须在项目根目录）
 - 便携版构建产物在 `release-portable/`
 - VBA 原型在 `业务原型/` 目录，仅作历史参考，不参与构建
 - `polars` 依赖已在 Cargo.toml 中注释预留，尚未启用
+- umya-spreadsheet 依赖仅保留 `error.rs` 中的 `From` trait（向后兼容），运行时已完全替换为 Route 2
+- `open_project` 会自动从 `companies.toml` 补齐空公司列表
+- 保险业态分析取数范围：A1:D18（详细指标）+ F1:H25（月度规模保费）
 - 详细架构设计请参考 `DESIGN.md`

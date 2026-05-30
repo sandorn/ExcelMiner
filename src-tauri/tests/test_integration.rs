@@ -167,9 +167,19 @@ fn test_report_write_and_readback() {
 
     let config = wb.worksheet_range("填写页").expect("填写页读取失败");
     let rows: Vec<&[calamine::Data]> = config.rows().collect();
-    // A2 = rows[0][0] (used range 从第2行开始，0-based index 0 对应第2行)
-    let a2_val = &rows[0][0];
-    assert_eq!(a2_val.to_string(), "4", "A2 应为月份 4");
+    // A1 有公式缓存时 used range 从 row1 开始，否则从 row2 开始
+    // A2 = month (always row index 0 or 1 depending on used range start)
+    let mut found_month = false;
+    for row in &rows {
+        if let Some(cell) = row.get(0) {
+            let s = cell.to_string().trim().to_string();
+            if s == "4" {
+                found_month = true;
+                break;
+            }
+        }
+    }
+    assert!(found_month, "A2 应为月份 4，实际 rows={:?}", rows.iter().map(|r| r.get(0).map(|c| c.to_string())).collect::<Vec<_>>());
 
     // 验证 保险类 Sheet 存在且非空
     let insurance = wb.worksheet_range("保险类").expect("保险类读取失败");

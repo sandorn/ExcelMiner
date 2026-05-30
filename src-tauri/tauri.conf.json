@@ -1,7 +1,7 @@
 {
     "$schema": "https://raw.githubusercontent.com/nicegui/tauri-v2-docs/main/docs/.vitepress/public/tauri-v2.schema.json",
     "productName": "ExcelMiner",
-    "version": "0.6.0",
+    "version": "0.7.0",
     "identifier": "com.excelminer.app",
     "build": {
         "frontendDist": "../dist",

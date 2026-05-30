@@ -2,6 +2,42 @@
 
 All notable changes to ExcelMiner will be documented in this file.
 
+## [0.7.0] — 2026-05-30
+
+### Added
+
+- Route 2 xlsx 写入：纯 Rust ZIP+XML 直接操作，替代 umya-spreadsheet（零 C 依赖，不崩溃）
+- SST 追加模式：保留模板原有共享字符串表格式（含富文本），防止索引偏移导致数据污染
+- `set_formula_with_value` API：写入公式同时附带缓存值，避免公式缓存清除后显示为空
+- `clear_dirty` 机制：指定 Sheet 免于公式缓存清除
+- `open_project` 公司列表自动补齐：空 companies 从注册表填充 9 家公司并回写 TOML
+- AI 分析详细日志：每步打印数据预览、字数统计、API 耗时、完成状态
+- 保险业态分析取数扩展：从仅 F1:H25 扩展至 A1:D18（详细指标）+ F1:H25（月度保费）
+- AI 输出空行压缩：sanitize_text 去除连续空行和首尾空行
+- `index.html` 入口文件
+
+### Changed
+
+- xlsx 写入引擎：umya-spreadsheet → 自定义 ZIP+XML 操作（`xlsx_writer.rs` ~1000 行）
+- 公司分析并发数：Semaphore(18) → Semaphore(3)
+- 质量评分满分：10 分 → 8 分
+
+### Fixed
+
+- umya-spreadsheet segfault 崩溃（模板加载时 C 库崩溃）
+- SST 富文本条目丢失导致所有文本单元格索引偏移（"项目列乱了"）
+- 填写页 A1 公式 =A2&A3 缓存清除后显示为空
+- `open_project` 空 companies 导致 AI 分析全部跳过（0 分 0 秒）
+- 保险业态分析取数不完整导致 AI 结论错误（"数据缺失严重"）
+- `index.html` 缺失导致 Vite 返回 404
+
+### Removed
+
+- umya-spreadsheet `build_sst` 方法（废弃，改为 `append_to_sst`）
+- 不再使用的 quick-xml `BytesEnd/BytesStart/BytesText/Writer` import
+
+---
+
 ## [0.6.0] — 2026-05-29
 
 ### Added
