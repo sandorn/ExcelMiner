@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Project, AppConfig } from '../types';
+import type { Project, AppConfig, AppError } from '../types';
 
 interface AppState {
     // 项目
@@ -22,6 +22,10 @@ interface AppState {
     // 分析结果
     analysisResults: any[];
     setAnalysisResults: (r: any[]) => void;
+
+    // 最近错误
+    lastError: AppError | null;
+    setLastError: (e: AppError | null) => void;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -40,4 +44,7 @@ export const useAppStore = create<AppState>((set) => ({
 
     analysisResults: [],
     setAnalysisResults: (r) => set({ analysisResults: r }),
+
+    lastError: null,
+    setLastError: (e) => set({ lastError: e }),
 }));

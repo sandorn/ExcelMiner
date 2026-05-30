@@ -18,13 +18,13 @@ ExcelMiner 是基于 Tauri v2 的 Windows 桌面应用，用于多子公司 Exce
 ## 2. 业务流程
 
 ```
-Step 1: 项目设置 → Step 2: 数据汇总 → Step 3: AI分析 → Step 4: 报表导出
+单页面三阶段: 数据汇总 → 板块AI分析 → 公司AI分析 → 打开结果文件
 ```
 
-1. **项目设置** — 输入项目名称+年月、选择数据/输出文件夹、勾选子公司、配置AI参数
-2. **数据汇总** — 按业态引擎（保险/酒店/商写/经营报表）自动识别Excel数据并汇总YTD指标
-3. **AI分析** — 调用DeepSeek API并发生成经营分析（Semaphore(18)），含4维度质量评分+最多2次重试（摘要不计分）
-4. **报表导出** — 写入xlsx汇总文件 + PPT文案复制到剪贴板
+1. **数据汇总** — 4 引擎并行（JoinSet），自动识别 Excel 数据并汇总 YTD 指标
+2. **板块AI分析** — 按业态（商写/保险/酒店）用专属提示词分析，数据从汇总表读取
+3. **公司AI分析** — 9 公司并发（Semaphore=3），含 4 维度质量评分 + 最多 2 次重试
+4. **打开结果** — 三阶段全部完成后按钮激活，资源管理器定位 xlsx
 
 ## 3. 项目结构
 
@@ -66,21 +66,26 @@ ExcelMiner/
 │   │   │   │   ├── hotel.rs               # 酒店汇总引擎
 │   │   │   │   ├── commercial.rs          # 商写汇总引擎
 │   │   │   │   └── financial.rs           # 经营报表汇总引擎
-│   │   │   ├── ai_analyzer.rs             # DeepSeek API 调用 + 分批重试 + 质量评分
+│   │   │   ├── ai_analyzer.rs             # DeepSeek API 调用 + 指数退避重试 + 重试日志
 │   │   │   ├── company_registry.rs        # 从 companies.toml 加载公司模板
 │   │   │   ├── excel_reader.rs            # calamine 泛型封装 ExcelReader<RS>
 │   │   │   ├── number_parser.rs           # 文本→数字解析（含表达式求值）
 │   │   │   ├── quality_checker.rs         # 分析内容验证 + 质量评估（QualityChecker 结构体）
-│   │   │   └── report_writer.rs           # xlsx 报表写入
+│   │   │   ├── xlsx_writer.rs            # Route 2 XlsxWriter（ZIP+XML 操作，~1100行）
+│   │   │   └── report_writer.rs           # xlsx 报表写入（调用 XlsxWriter）
 │   │   └── utils/
 │   │       ├── mod.rs                     # utils 模块入口
 │   │       └── date_utils.rs              # 日期解析（年月/文件夹名）+ YTD月份计算
 │   ├── Cargo.toml
 │   ├── tauri.conf.json
 │   └── tests/
-│       ├── test_core.rs                   # 核心功能测试（number_parser/quality_checker/date_utils/ai_analyzer）
-│       ├── test_aggregation.rs            # 数据汇总测试
-│       └── test_xlsx_debug.rs             # Excel 文件读取调试
+│       ├── test_core.rs                   # 核心功能测试（25 例）
+│       ├── test_aggregation.rs            # 数据汇总测试（5 例）
+│       ├── test_analysis.rs              # AI 分析测试（28 例）
+│       ├── test_integration.rs           # 集成测试（9 例）
+│       ├── test_real_data.rs             # 真实数据测试（7 例）
+│       ├── integration_test.rs           # 生产数据集成测试（周边污染 + 数据正确性）
+│       └── test_xlsx_debug.rs             # Excel 文件读写调试
 ├── resources/
 │   ├── companies.toml            # 子公司预定义模板（9家公司3个业态）
 │   └── prompts/                  # AI 系统提示词（保险分析/酒店分析/商写分析/财务分析师）
@@ -93,19 +98,23 @@ ExcelMiner/
 
 ## 4. 前端架构
 
-当前版本采用**单页面一体化模式**（`MainPage.tsx`）：
+当前版本采用**单页面一体化模式**（`MainPage.tsx`，~500 行）：
 
 ```
-┌────────────────────────────────────────────┐
-│  App.tsx (Layout: Header + Content)        │
-│    └── MainPage.tsx                        │
-│          ├── 配置区（年月/目录/API Key）     │
-│          ├── 操作区（一键汇总/板块分析/公司分析）│
-│          └── 日志区（实时滚动输出）          │
-└────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────┐
+│  App.tsx (Layout: Header + Content)               │
+│    └── MainPage.tsx                               │
+│          ├── 配置区（数据源/结果文件/月份/API Key）│
+│          ├── 操作区（汇总/板块/公司 + 打开结果）    │
+│          └── 日志区（实时滚动，深色终端风格）       │
+│                                                   │
+│  Hooks: useAggregation / useAnalysis              │
+│  Utils: src/utils/format.ts                       │
+│  Tests: src/__tests__/ (Vitest, 13 tests)         │
+└───────────────────────────────────────────────────┘
 ```
 
-> 早期版本使用 4 步向导路由（`/setup → /import → /analysis → /export`），对应页面 `ProjectSetup/DataImport/AIAnalysis/ReportExport.tsx` 保留在代码库中作为兼容参考。
+> 早期 4 步向导页面（`ProjectSetup/DataImport/AIAnalysis/ReportExport.tsx`）已废弃，保留兼容参考。`react-router-dom` 已移除。
 
 ## 5. Rust 后端核心设计
 
@@ -516,5 +525,5 @@ strip = true; lto = true; codegen-units = 1; opt-level = "s"; panic = "abort"
 | Phase 1 | Rust+Tauri框架、React+Antd前端、配置管理、错误/日志            | ✅                   |
 | Phase 2 | 4汇总引擎、Excel读写、数字解析、YTD累计、日期工具              | ✅                   |
 | Phase 3 | DeepSeek API客户端、提示词加载、逐公司分析+重试、4维度质量评分 | ✅                   |
-| Phase 4 | xlsx报表写入、PPT文案导出、QualityChecker集成、页面联调        | ✅（主题样式待完善） |
+| Phase 4 | Route 2 xlsx写入、AI分析集成、UI紧凑化、文档完善                    | ✅ v0.7.0 |
 | Phase 5 | 便携版打包、集成测试、MSI安装包                                | ✅                   |

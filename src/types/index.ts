@@ -98,3 +98,9 @@ export interface AppConfig {
         system_prompt_path: string;
     };
 }
+
+/** 前端错误封装 */
+export interface AppError {
+    code: string; // 'FILE_LOCKED' | 'API_KEY' | 'API_TIMEOUT' | 'NETWORK' | 'QUALITY' | 'UNKNOWN'
+    message: string;
+}

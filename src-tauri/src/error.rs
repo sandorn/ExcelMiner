@@ -52,10 +52,6 @@ impl From<toml::de::Error> for AppError {
     }
 }
 
-impl From<umya_spreadsheet::XlsxError> for AppError {
-    fn from(e: umya_spreadsheet::XlsxError) -> Self {
-        AppError::Other(format!("XlsxError: {}", e))
-    }
-}
+
 
 pub type AppResult<T> = Result<T, AppError>;

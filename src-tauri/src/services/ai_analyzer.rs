@@ -253,6 +253,10 @@ impl AIAnalyzer {
                         company_name, trimmed.len(), retry + 1, self.config.max_retries,
                         if trimmed.is_empty() { "(空)" } else { trimmed }
                     );
+                    tracing::info!(
+                        "[板块分析] {} 内容不足50字，正在重试 ({}/{})...",
+                        company_name, retry + 1, self.config.max_retries
+                    );
                     last_content = trimmed.to_string();
                     last_usage = usage;
                 }
@@ -539,6 +543,11 @@ impl AIAnalyzer {
 
                     tracing::warn!(
                         "[经营分析] {} ⚠ 不达标(得分{}/{}) 重试{}/{}",
+                        company_name, score, self.config.quality_threshold,
+                        retry + 1, self.config.max_retries
+                    );
+                    tracing::info!(
+                        "[经营分析] {} 质量评分不足({}/{})，正在重试 ({}/{})...",
                         company_name, score, self.config.quality_threshold,
                         retry + 1, self.config.max_retries
                     );

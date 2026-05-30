@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+// [v0.7.0] react-router-dom removed, navigation not wired
+// import { useNavigate } from 'react-router-dom';
 import {
     Card,
     Form,
@@ -34,7 +35,8 @@ const BUSINESS_TYPES: { value: BusinessType; label: string }[] = [
 ];
 
 export default function ProjectSetup() {
-    const navigate = useNavigate();
+    // [v0.7.0] react-router-dom removed, navigation not wired
+    // const navigate = useNavigate();
     const setProject = useAppStore((s) => s.setProject);
     const [form] = Form.useForm();
     const [companies, setCompanies] = useState<Company[]>([
@@ -96,7 +98,8 @@ export default function ProjectSetup() {
 
             setProject(updated);
             message.success(`项目 "${projectName}" 创建成功`);
-            navigate('/import');
+            // [v0.7.0] react-router-dom removed, navigation not wired
+            // navigate('/import');
         } catch (e: any) {
             message.error(`创建失败: ${e}`);
         } finally {

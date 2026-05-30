@@ -2,10 +2,20 @@
 use std::path::PathBuf;
 use calamine::Reader;
 
-const DATA_DIR: &str = r"C:\Users\Administrator\Desktop\2026年4月分析";
-const TEMPLATE: &str = r"C:\Users\Administrator\Desktop\2026年4月分析\【2026年4月】经营数据 - 空.xlsx";
-const REFERENCE: &str = r"C:\Users\Administrator\Desktop\2026年4月分析\【2026年4月】结果表.xlsx";
-const TEST_OUTPUT: &str = r"C:\Users\Administrator\Desktop\2026年4月分析\【2026年4月】经营数据_TEST.xlsx";
+const DEFAULT_DATA_DIR: &str = r"C:\Users\Administrator\Desktop\2026年4月分析";
+
+fn data_dir() -> String {
+    std::env::var("EXCELMINER_TEST_DIR").unwrap_or_else(|_| DEFAULT_DATA_DIR.to_string())
+}
+fn template_path() -> String {
+    format!("{}\\【2026年4月】经营数据 - 空.xlsx", data_dir())
+}
+fn reference_path() -> String {
+    format!("{}\\【2026年4月】结果表.xlsx", data_dir())
+}
+fn test_output_path() -> String {
+    format!("{}\\【2026年4月】经营数据_TEST.xlsx", data_dir())
+}
 
 use excelminer_lib::models::project::{BusinessType, Company, Project, AIConfig};
 use excelminer_lib::services::data_aggregator::{
@@ -28,7 +38,7 @@ fn make_project() -> Project {
         Company { name: "重庆瑞尔".into(), business_type: BusinessType::Hotel, regions: vec![] },
     ];
     Project { name: "2026年4月".into(), year: 2026, month: 4,
-        data_folder: PathBuf::from(DATA_DIR), output_file: PathBuf::from(TEST_OUTPUT),
+        data_folder: PathBuf::from(data_dir()), output_file: PathBuf::from(test_output_path()),
         companies, ytd_months: 4, ai_config: AIConfig::default() }
 }
 
@@ -87,8 +97,9 @@ fn count_diffs(ref_path: &str, test_path: &str, sheet: &str, max_show: usize) ->
 
 #[test]
 fn test_full_aggregation() {
-    let _ = std::fs::remove_file(TEST_OUTPUT); // 清理旧测试文件
-    std::fs::copy(TEMPLATE, TEST_OUTPUT).expect("复制模板失败");
+    let out = test_output_path();
+    let _ = std::fs::remove_file(&out); // 清理旧测试文件
+    std::fs::copy(template_path(), &out).expect("复制模板失败");
     println!("\n=== 自动化汇总测试 ===");
     let project = make_project();
 
@@ -119,7 +130,7 @@ fn test_full_aggregation() {
     ];
     let mut data_issues = 0usize;
     for (name, cat) in checks {
-        let (count, detail) = count_diffs(REFERENCE, TEST_OUTPUT, name, 8);
+        let (count, detail) = count_diffs(&reference_path(), &out, name, 8);
         let suffix = if *cat == "公司" { " (E/F列=公式缓存, 正常)" } else { "" };
         if count == 0 { println!("  ✅ {} - 完全一致", name); }
         else { println!("  ⚠️  {} - {} 处差异{}", name, count, suffix);
@@ -133,7 +144,7 @@ fn test_full_aggregation() {
     let unchanged = &["年度计划","分解计划","总指标历史分期","营收历史分体分期","管理建议","整体","营收"];
     let mut corrupted = 0usize;
     for name in unchanged {
-        let (count, _) = count_diffs(TEMPLATE, TEST_OUTPUT, name, 0);
+        let (count, _) = count_diffs(&template_path(), &out, name, 0);
         if count > 0 { corrupted += 1; println!("  ❌ {} - {} 处差异(被污染!)", name, count); }
         else { println!("  ✅ {} 完整", name); }
     }
@@ -141,7 +152,7 @@ fn test_full_aggregation() {
     // ── C. 公式缓存清除验证 ──
     let mut formula_cleared = 0usize;
     for name in &["盛唐融信","北京中言","重庆瑞尔"] {
-        let (count, _) = count_diffs(TEMPLATE, TEST_OUTPUT, name, 0);
+        let (count, _) = count_diffs(&template_path(), &out, name, 0);
         if count > 0 { formula_cleared += 1; }
         println!("  ✅ {} - {} 处修改(含公式缓存清除)", name, count);
     }

@@ -13,14 +13,25 @@ All notable changes to ExcelMiner will be documented in this file.
 - `open_project` 公司列表自动补齐：空 companies 从注册表填充 9 家公司并回写 TOML
 - AI 分析详细日志：每步打印数据预览、字数统计、API 耗时、完成状态
 - 保险业态分析取数扩展：从仅 F1:H25 扩展至 A1:D18（详细指标）+ F1:H25（月度保费）
-- AI 输出空行压缩：sanitize_text 去除连续空行和首尾空行
+- AI 输出空行压缩：sanitize_text 去除所有空行（AI 提示词要求"各段之间不空行"）
 - `index.html` 入口文件
+- SST 全格式解析：支持 `xml:space`、`<r>` 富文本，一 `<si>` 一字符串，消除 SST 原始/可解析偏差
+- 汇总引擎并行化：4 引擎同时执行（`JoinSet`），耗时 800ms → 300ms
+- 前端错误体系：`AppError` 6 种错误码（FILE_LOCKED / API_KEY / API_TIMEOUT / NETWORK / QUALITY / UNKNOWN）
+- 前端服务层抽取：`useAggregation` / `useAnalysis` hooks，MainPage 减少 ~90 行
+- 前端测试框架：Vitest + 14 个测试（store + 工具函数）
+- 进度格式化：板块分析启动行无计时、完成行显示已用时，公司分析无计时
+- 打开结果文件按钮：三阶段全部完成后激活（绿色按钮）
+- 重试进度日志：AI 不达标时打印"正在重试 (1/2)..."
 
 ### Changed
 
-- xlsx 写入引擎：umya-spreadsheet → 自定义 ZIP+XML 操作（`xlsx_writer.rs` ~1000 行）
+- xlsx 写入引擎：umya-spreadsheet → 自定义 ZIP+XML 操作（`xlsx_writer.rs` ~1100 行）
 - 公司分析并发数：Semaphore(18) → Semaphore(3)
 - 质量评分满分：10 分 → 8 分
+- 窗口尺寸：1280x860 → 920x620（最小 1024x700 → 720x500）
+- UI 布局紧凑化：卡片合并、间距缩小、字体统一 12px、日志面板 240px
+- `sanitize_text`：保留一个空行 → 去除所有空行
 
 ### Fixed
 
@@ -30,11 +41,18 @@ All notable changes to ExcelMiner will be documented in this file.
 - `open_project` 空 companies 导致 AI 分析全部跳过（0 分 0 秒）
 - 保险业态分析取数不完整导致 AI 结论错误（"数据缺失严重"）
 - `index.html` 缺失导致 Vite 返回 404
+- 进度计数 `[0/3]` 修正为 `[1/3]`
+- `aggregation-progress` 重复事件（spawn 内 + 收集循环内各发一次）已去重
+- `ProgressStatus` 序列化 snake_case 与前端 filter 不匹配（`'Done'` vs `'done'`）
+- 板块分析输出空行（AI 偶尔在多段间插空行）
 
 ### Removed
 
-- umya-spreadsheet `build_sst` 方法（废弃，改为 `append_to_sst`）
+- umya-spreadsheet 依赖（`Cargo.toml` + `error.rs` From trait）
+- `build_sst` 方法（废弃，改为 `append_to_sst`）
 - 不再使用的 quick-xml `BytesEnd/BytesStart/BytesText/Writer` import
+- `react-router-dom` 依赖（未使用）
+- `Divider` import（UI 紧凑化后不再需要）
 
 ---
 

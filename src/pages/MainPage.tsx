@@ -9,7 +9,6 @@ import {
     message,
     Row,
     Col,
-    Divider,
     Typography,
 } from 'antd';
 import {
@@ -21,36 +20,42 @@ import {
     LoadingOutlined,
 } from '@ant-design/icons';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
 import dayjs from 'dayjs';
 import { useAppStore } from '../stores/appStore';
-import type { Project, Company, AggregationResult, AnalysisResult, ProgressUpdate } from '../types';
+import { useAggregation } from '../hooks/useAggregation';
+import { useAnalysis } from '../hooks/useAnalysis';
+import { timestamp } from '../utils/format';
+import type { Project, AppError } from '../types';
 
 const { Text } = Typography;
 
-/** 格式化耗时 (与 AardMiner 一致: X分XX秒) */
-function formatElapsed(ms: number): string {
-    const sec = Math.floor(ms / 1000);
-    const m = Math.floor(sec / 60);
-    const s = sec % 60;
-    return `${m}分${String(s).padStart(2, '0')}秒`;
-}
-
-/** 时间戳 HH:MM:SS */
-function timestamp(): string {
-    const d = new Date();
-    return [d.getHours(), d.getMinutes(), d.getSeconds()]
-        .map((n) => String(n).padStart(2, '0'))
-        .join(':');
+/** 将 invoke 异常翻译为用户可读的错误码 */
+function translateError(e: any): AppError {
+    const msg = String(e);
+    if (msg.includes('被 Excel 打开') || msg.includes('Device or resource busy')) {
+        return { code: 'FILE_LOCKED', message: '文件被 Excel 占用，请关闭 Excel 后重试' };
+    }
+    if (msg.includes('API Key') || msg.includes('api_key')) {
+        return { code: 'API_KEY', message: 'API Key 未配置或无效' };
+    }
+    if (msg.includes('超时') || msg.includes('timeout') || msg.includes('timed out')) {
+        return { code: 'API_TIMEOUT', message: 'DeepSeek API 超时，请检查网络或重试' };
+    }
+    if (msg.includes('connect') || msg.includes('DNS') || msg.includes('refused')) {
+        return { code: 'NETWORK', message: '网络连接失败，请检查网络' };
+    }
+    return { code: 'UNKNOWN', message: msg };
 }
 
 export default function MainPage() {
     const project = useAppStore((s) => s.project);
     const projectName = useAppStore((s) => s.projectName);
     const setProject = useAppStore((s) => s.setProject);
-    const aggregationResults = useAppStore((s) => s.aggregationResults);
-    const setAggregationResults = useAppStore((s) => s.setAggregationResults);
-    const setAnalysisResults = useAppStore((s) => s.setAnalysisResults);
+    const setLastError = useAppStore((s) => s.setLastError);
+
+    // ── 自定义 Hooks ──
+    const aggregation = useAggregation();
+    const analysis = useAnalysis();
 
     // ── 配置状态 ──
     const [month, setMonth] = useState<dayjs.Dayjs>(dayjs());
@@ -66,6 +71,12 @@ export default function MainPage() {
     const [btnSummaryDisabled, setBtnSummaryDisabled] = useState(false);
     const [btnSectorDisabled, setBtnSectorDisabled] = useState(false);
     const [btnCompanyDisabled, setBtnCompanyDisabled] = useState(false);
+
+    // ── 阶段完成标记 ──
+    const [phase1Done, setPhase1Done] = useState(false);
+    const [phase2Done, setPhase2Done] = useState(false);
+    const [phase3Done, setPhase3Done] = useState(false);
+    const allPhasesDone = phase1Done && phase2Done && phase3Done;
 
     // ── 日志 ──
     const [logLines, setLogLines] = useState<string[]>([]);
@@ -219,7 +230,9 @@ export default function MainPage() {
             setProject(updated);
             return updated;
         } catch (e: any) {
-            message.error(`保存配置失败: ${e}`);
+            const err = translateError(e);
+            setLastError(err);
+            message.error(`保存配置失败: ${err.message}`, 5);
             return null;
         }
     };
@@ -239,7 +252,9 @@ export default function MainPage() {
                 message.success(`项目 "${p.name}" 已打开`);
             }
         } catch (e: any) {
-            message.error(`打开失败: ${e}`);
+            const err = translateError(e);
+            setLastError(err);
+            message.error(`打开失败: ${err.message}`, 5);
         }
     };
 
@@ -260,39 +275,28 @@ export default function MainPage() {
         setBtnCompanyDisabled(false);
     };
 
+    // ── 打开结果文件 ──
+    const handleOpenResult = async () => {
+        if (!outputFile) return;
+        try {
+            await invoke('open_in_explorer', { path: outputFile });
+        } catch (_) {}
+    };
+
     // ── 阶段1: 数据汇总 ──
     const handleSummary = async () => {
-        enableAll(); // 安全重置：清除之前可能残留的禁用状态
+        enableAll();
         const p = await saveConfig();
         if (!p) return;
+        setPhase1Done(false);
         disableAll('数据汇总');
-        const startTime = Date.now();
-        addLog('=== 阶段1: 数据汇总 ===');
-
         try {
-            const engines = ['insurance', 'hotel', 'commercial', 'financial'];
-            const unlisten = await listen<{ step: string; progress: number; status: string }>(
-                'aggregation-progress',
-                (event) => { addLog(`  ${event.payload.step}`); },
-            );
-            try {
-                const results = await invoke<AggregationResult[]>('execute_aggregation', {
-                    project: p,
-                    engines,
-                });
-                const runNames = new Set(['保险数据汇总', '酒店数据汇总', '商写数据汇总', '经营报表汇总']);
-                setAggregationResults([
-                    ...aggregationResults.filter((r) => !runNames.has(r.engine_name)),
-                    ...results,
-                ]);
-                const elapsed = formatElapsed(Date.now() - startTime);
-                addLog('');
-                addLog(`=== 数据汇总完成，共耗时 ${elapsed} ===`);
-            } finally {
-                unlisten();
-            }
+            await aggregation.run(p, addLog);
+            setPhase1Done(true);
         } catch (e: any) {
-            addLog(`错误: ${e}`);
+            const err = translateError(e);
+            setLastError(err);
+            message.error(err.message, 5);
         } finally {
             enableAll();
         }
@@ -300,40 +304,22 @@ export default function MainPage() {
 
     // ── 阶段2: 板块AI分析 ──
     const handleSector = async () => {
-        enableAll(); // 安全重置：清除之前可能残留的禁用状态
+        enableAll();
         const p = await saveConfig();
         if (!p) return;
         if (!apiKey) {
             addLog('错误: 未配置 API Key，跳过板块分析');
             return;
         }
+        setPhase2Done(false);
         disableAll('业态分析');
-        const startTime = Date.now();
-        addLog('=== 阶段2: 板块AI分析 ===');
-
         try {
-            const unlisten = await listen<ProgressUpdate>('analysis-progress', (event) => {
-                addLog(`  ${event.payload.step}`);
-            });
-            try {
-                const results = await invoke<AnalysisResult[]>('execute_segment_analysis', {
-                    project: p,
-                    businessTypes: ['Commercial', 'Insurance', 'Hotel'],
-                    customPrompt: null,
-                });
-                const current = useAppStore.getState().analysisResults;
-                setAnalysisResults([
-                    ...current.filter((r) => r.analysis_category === 'company'),
-                    ...results,
-                ]);
-                const elapsed = formatElapsed(Date.now() - startTime);
-                addLog('');
-                addLog(`=== 业态分析完成，共耗时 ${elapsed} ===`);
-            } finally {
-                unlisten();
-            }
+            await analysis.runSegment(p, addLog);
+            setPhase2Done(true);
         } catch (e: any) {
-            addLog(`错误: ${e}`);
+            const err = translateError(e);
+            setLastError(err);
+            message.error(err.message, 5);
         } finally {
             enableAll();
         }
@@ -341,250 +327,125 @@ export default function MainPage() {
 
     // ── 阶段3: 公司AI分析 ──
     const handleCompany = async () => {
-        enableAll(); // 安全重置：清除之前可能残留的禁用状态
+        enableAll();
         const p = await saveConfig();
         if (!p) return;
         if (!apiKey) {
             addLog('错误: 未配置 API Key，跳过公司分析');
             return;
         }
+        setPhase3Done(false);
         disableAll('公司分析');
-        const startTime = Date.now();
-        addLog('=== 阶段3: 公司核心指标分析 ===');
-
         try {
-            const unlisten = await listen<ProgressUpdate>('analysis-progress', (event) => {
-                addLog(`  ${event.payload.step}`);
-            });
-            try {
-                const results = await invoke<AnalysisResult[]>('execute_company_analysis', {
-                    project: p,
-                });
-                const current = useAppStore.getState().analysisResults;
-                setAnalysisResults([
-                    ...current.filter((r) => r.analysis_category === 'segment'),
-                    ...results,
-                ]);
-                const elapsed = formatElapsed(Date.now() - startTime);
-                addLog('');
-                addLog(`=== 公司分析完成，共耗时 ${elapsed} ===`);
-            } finally {
-                unlisten();
-            }
+            await analysis.runCompany(p, addLog);
+            setPhase3Done(true);
         } catch (e: any) {
-            addLog(`错误: ${e}`);
+            const err = translateError(e);
+            setLastError(err);
+            message.error(err.message, 5);
         } finally {
             enableAll();
         }
     };
 
     return (
-        <div style={{ maxWidth: 780, margin: '0 auto' }}>
+        <div style={{ maxWidth: 700, margin: '0 auto' }}>
             {/* ======== 运行配置 ======== */}
-            <Card
-                title={
-                    <Text strong style={{ fontSize: 14 }}>
-                        运行配置
-                    </Text>
-                }
-                size="small"
-                style={{ marginBottom: 8 }}
-            >
-                <Row gutter={[8, 4]} align="middle">
+            <Card size="small" style={{ marginBottom: 6 }}>
+                <Row gutter={[6, 2]} align="middle">
+                    <Col span={3}>
+                        <Text type="secondary" style={{ fontSize: 12 }}>数据源:</Text>
+                    </Col>
+                    <Col span={17}>
+                        <Input value={dataFolder} onChange={(e) => setDataFolder(e.target.value)} placeholder="选择数据源目录..." size="small" />
+                    </Col>
                     <Col span={4}>
-                        <Text type="secondary">数据源目录:</Text>
-                    </Col>
-                    <Col span={18}>
-                        <Input
-                            value={dataFolder}
-                            onChange={(e) => setDataFolder(e.target.value)}
-                            placeholder="选择数据源目录..."
-                            size="small"
-                        />
-                    </Col>
-                    <Col span={2}>
-                        <Button
-                            size="small"
-                            icon={<FolderOpenOutlined />}
-                            onClick={() => selectFolder('data')}
-                        />
+                        <Button size="small" icon={<FolderOpenOutlined />} onClick={() => selectFolder('data')} style={{ width: '100%' }} />
                     </Col>
 
+                    <Col span={3}>
+                        <Text type="secondary" style={{ fontSize: 12 }}>结果文件:</Text>
+                    </Col>
+                    <Col span={17}>
+                        <Input value={outputFile} onChange={(e) => setOutputFile(e.target.value)} placeholder="选择 .xlsx ..." size="small" />
+                    </Col>
                     <Col span={4}>
-                        <Text type="secondary">结果文件:</Text>
-                    </Col>
-                    <Col span={18}>
-                        <Input
-                            value={outputFile}
-                            onChange={(e) => setOutputFile(e.target.value)}
-                            placeholder="选择结果 .xlsx 文件..."
-                            size="small"
-                        />
-                    </Col>
-                    <Col span={2}>
-                        <Button
-                            size="small"
-                            icon={<FolderOpenOutlined />}
-                            onClick={() => selectFolder('output')}
-                        />
+                        <Button size="small" icon={<FolderOpenOutlined />} onClick={() => selectFolder('output')} style={{ width: '100%' }} />
                     </Col>
 
-                    <Col span={4}>
-                        <Text type="secondary">月份:</Text>
+                    <Col span={3}>
+                        <Text type="secondary" style={{ fontSize: 12 }}>月份:</Text>
                     </Col>
                     <Col span={5}>
-                        <DatePicker
-                            picker="month"
-                            value={month}
-                            onChange={(d) => d && setMonth(d)}
-                            format="M月"
-                            size="small"
-                            style={{ width: '100%' }}
-                            allowClear={false}
-                        />
+                        <DatePicker picker="month" value={month} onChange={(d) => d && setMonth(d)} format="M月" size="small" style={{ width: '100%' }} allowClear={false} />
                     </Col>
-                    <Col span={3}>
-                        <Text type="secondary">年份:</Text>
+                    <Col span={2}>
+                        <Text type="secondary" style={{ fontSize: 12 }}>年:</Text>
                     </Col>
                     <Col span={5}>
-                        <DatePicker
-                            picker="year"
-                            value={month}
-                            onChange={(d) => d && setMonth(d)}
-                            format="YYYY年"
-                            size="small"
-                            style={{ width: '100%' }}
-                            allowClear={false}
-                        />
+                        <DatePicker picker="year" value={month} onChange={(d) => d && setMonth(d)} format="YYYY年" size="small" style={{ width: '100%' }} allowClear={false} />
                     </Col>
-                    <Col span={3}>
-                        <Text type="secondary">模型:</Text>
+                    <Col span={2}>
+                        <Text type="secondary" style={{ fontSize: 12 }}>模型:</Text>
                     </Col>
-                    <Col span={4}>
-                        <Input
-                            value={model}
-                            onChange={(e) => setModel(e.target.value)}
-                            size="small"
-                        />
+                    <Col span={5}>
+                        <Input value={model} onChange={(e) => setModel(e.target.value)} size="small" />
                     </Col>
 
-                    <Col span={4}>
-                        <Text type="secondary">API Key:</Text>
+                    <Col span={3}>
+                        <Text type="secondary" style={{ fontSize: 12 }}>API Key:</Text>
                     </Col>
-                    <Col span={14}>
-                        <Input.Password
-                            prefix={<KeyOutlined />}
-                            value={apiKey}
-                            onChange={(e) => {
-                                setApiKey(e.target.value);
-                                setApiKeyConfigured(e.target.value.length > 0);
-                            }}
-                            placeholder="sk-..."
-                            size="small"
-                        />
+                    <Col span={13}>
+                        <Input.Password prefix={<KeyOutlined />} value={apiKey} onChange={(e) => { setApiKey(e.target.value); setApiKeyConfigured(e.target.value.length > 0); }} placeholder="sk-..." size="small" />
                     </Col>
-                    <Col span={6}>
-                        <Text
-                            type={apiKeyConfigured ? 'success' : 'secondary'}
-                            style={{ fontSize: 12 }}
-                        >
-                            API Key: {apiKeyConfigured ? '已配置' : '未配置'}
-                        </Text>
+                    <Col span={8}>
+                        <Button size="small" onClick={handleOpen} icon={<FolderOpenOutlined />}>打开项目</Button>
+                        {projectName && <Tag color="blue" style={{ marginLeft: 4, fontSize: 11 }}>{projectName}</Tag>}
                     </Col>
                 </Row>
-
-                <Divider style={{ margin: '6px 0' }} />
-
-                <Space>
-                    <Button size="small" onClick={handleOpen} icon={<FolderOpenOutlined />}>
-                        打开已有项目
-                    </Button>
-                    {projectName && (
-                        <Tag color="blue">当前项目: {projectName}</Tag>
-                    )}
-                </Space>
             </Card>
 
-            {/* ======== 执行控制 ======== */}
-            <Card
-                title={
-                    <Text strong style={{ fontSize: 14 }}>
-                        执行控制
-                    </Text>
-                }
-                size="small"
-                style={{ marginBottom: 8 }}
-            >
-                <Space size={12}>
-                    <Button
-                        type="primary"
+            {/* ======== 执行控制 + 结果 ======== */}
+            <Card size="small" style={{ marginBottom: 6 }}>
+                <Space size={8}>
+                    <Button type="primary" size="small"
                         icon={running && runningLabel === '数据汇总' ? <LoadingOutlined /> : <PlayCircleOutlined />}
-                        onClick={handleSummary}
-                        disabled={btnSummaryDisabled || !dataFolder}
-                        loading={running && runningLabel === '数据汇总'}
-                    >
-                        数据汇总
-                    </Button>
-                    <Button
+                        onClick={handleSummary} disabled={btnSummaryDisabled || !dataFolder}
+                        loading={running && runningLabel === '数据汇总'}>数据汇总</Button>
+                    <Button size="small"
                         icon={running && runningLabel === '业态分析' ? <LoadingOutlined /> : <ThunderboltOutlined />}
-                        onClick={handleSector}
-                        disabled={btnSectorDisabled || !apiKeyConfigured}
-                        loading={running && runningLabel === '业态分析'}
-                    >
-                        业态分析
-                    </Button>
-                    <Button
+                        onClick={handleSector} disabled={btnSectorDisabled || !apiKeyConfigured}
+                        loading={running && runningLabel === '业态分析'}>业态分析</Button>
+                    <Button size="small"
                         icon={running && runningLabel === '公司分析' ? <LoadingOutlined /> : <ReloadOutlined />}
-                        onClick={handleCompany}
-                        disabled={btnCompanyDisabled || !apiKeyConfigured}
-                        loading={running && runningLabel === '公司分析'}
-                    >
-                        公司分析
+                        onClick={handleCompany} disabled={btnCompanyDisabled || !apiKeyConfigured}
+                        loading={running && runningLabel === '公司分析'}>公司分析</Button>
+                    <Button size="small" type="primary"
+                        icon={<FolderOpenOutlined />} onClick={handleOpenResult}
+                        disabled={!allPhasesDone}
+                        style={{ background: allPhasesDone ? '#52c41a' : undefined, borderColor: allPhasesDone ? '#52c41a' : undefined }}>
+                        打开结果
                     </Button>
+                    <Text type="secondary" style={{ fontSize: 11 }}>
+                        {running ? `正在执行 - ${runningLabel}` : allPhasesDone ? '全部完成' : '就绪'}
+                    </Text>
                 </Space>
             </Card>
 
             {/* ======== 运行日志 ======== */}
-            <Card
-                title={
-                    <Text strong style={{ fontSize: 14 }}>
-                        运行日志
-                    </Text>
-                }
-                size="small"
-                bodyStyle={{ padding: 8 }}
-            >
-                <div
-                    style={{
-                        height: 320,
-                        overflow: 'auto',
-                        background: '#1e1e1e',
-                        color: '#d4d4d4',
-                        fontFamily: 'Consolas, "Courier New", monospace',
-                        fontSize: 13,
-                        padding: 8,
-                        borderRadius: 4,
-                        whiteSpace: 'pre-wrap',
-                        wordBreak: 'break-all',
-                    }}
-                >
-                    {logLines.length === 0 ? (
-                        <Text type="secondary" style={{ color: '#888' }}>
-                            等待执行...
-                        </Text>
-                    ) : (
-                        logLines.map((line, i) => (
-                            <div key={i}>{line}</div>
-                        ))
-                    )}
+            <Card size="small" bodyStyle={{ padding: 6 }}>
+                <div style={{
+                    height: 240, overflow: 'auto', background: '#1e1e1e', color: '#d4d4d4',
+                    fontFamily: 'Consolas, "Courier New", monospace', fontSize: 12,
+                    padding: 6, borderRadius: 4, whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+                }}>
+                    {logLines.length === 0
+                        ? <Text style={{ color: '#888', fontSize: 12 }}>等待执行...</Text>
+                        : logLines.map((line, i) => <div key={i}>{line}</div>)
+                    }
                     <div ref={logEndRef} />
                 </div>
             </Card>
-
-            {/* ======== 状态栏 ======== */}
-            <Text type="secondary" style={{ fontSize: 12 }}>
-                状态: {running ? `正在执行 - ${runningLabel}` : '就绪'}
-            </Text>
         </div>
     );
 }

@@ -439,23 +439,30 @@ impl XlsxWriter {
         let mut buf = Vec::new();
         let mut in_si = false;
         let mut in_t = false;
+        let mut current_text = String::new();
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(Event::Start(ref e)) => {
-                    if e.name().as_ref() == b"si" {
-                        in_si = true;
-                    } else if in_si && e.name().as_ref() == b"t" {
-                        in_t = true;
+                    match e.name().as_ref() {
+                        b"si" => {
+                            in_si = true;
+                            current_text.clear();
+                        }
+                        b"t" if in_si => in_t = true,
+                        _ => {}
                     }
                 }
                 Ok(Event::Text(ref e)) => {
                     if in_t {
-                        strings.push(e.unescape().unwrap_or_default().into_owned());
+                        current_text.push_str(&e.unescape().unwrap_or_default());
                     }
                 }
                 Ok(Event::End(ref e)) => {
                     match e.name().as_ref() {
-                        b"si" => in_si = false,
+                        b"si" => {
+                            in_si = false;
+                            strings.push(std::mem::take(&mut current_text));
+                        }
                         b"t" => in_t = false,
                         _ => {}
                     }

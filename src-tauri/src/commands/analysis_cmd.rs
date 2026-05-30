@@ -108,7 +108,7 @@ pub async fn execute_segment_analysis(
 
         let _ = window.emit("analysis-progress", ProgressUpdate {
             step: format!("板块分析: {} (第{}/{}) — 正在调用AI...", segment_name, type_idx + 1, total_types),
-            progress: (type_idx as f64) / (total_types as f64),
+            progress: (type_idx as f64 + 1.0) / (total_types as f64),
             status: ProgressStatus::Running,
             company: Some(segment_name.clone()),
         });

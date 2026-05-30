@@ -40,9 +40,13 @@ npm run tauri build
 
 | 文件                                                   | 作用                                                                                                                  |
 | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
-| `src/stores/appStore.ts`                               | Zustand 全局状态（project/appConfig/aggregationResults/analysisResults/currentStep）                                  |
-| `src/pages/MainPage.tsx`                               | **主界面** — 单页面一体化操作（配置+汇总+分析+日志），当前默认入口                                                    |
-| `src/pages/ProjectSetup.tsx`                           | [旧] Step 1 — 项目创建/打开（4步向导模式，保留兼容）                                                                  |
+| `src/stores/appStore.ts`                               | Zustand 全局状态（project/appConfig/aggregationResults/analysisResults/currentStep/lastError）                    |
+| `src/pages/MainPage.tsx`                               | **主界面** — 单页面一体化（配置+控制+日志），~500行                                                                  |
+| `src/hooks/useAggregation.ts`                          | 数据汇总 hook（invoke + listen 封装）                                                                                |
+| `src/hooks/useAnalysis.ts`                             | AI 分析 hook（板块分析 + 公司分析，进度格式化）                                                                      |
+| `src/utils/format.ts`                                  | 工具函数（formatElapsed / timestamp / formatProgress）                                                              |
+| `src/__tests__/`                                       | Vitest 前端测试（store 8例 + 工具函数 6例）                                                                         |
+| `src/pages/ProjectSetup.tsx`                           | [旧] Step 1 — 项目创建/打开（已废弃，保留兼容）                                                                      |
 | `src/pages/DataImport.tsx`                             | [旧] Step 2 — 数据预览 + 一键汇总（保留兼容）                                                                         |
 | `src/pages/AIAnalysis.tsx`                             | [旧] Step 3 — AI 分析执行 + 结果展示（保留兼容）                                                                      |
 | `src/pages/ReportExport.tsx`                           | [旧] Step 4 — 导出 xlsx + 复制 PPT 文案（保留兼容）                                                                   |
@@ -193,7 +197,16 @@ npm run tauri build
 | `src-tauri/tests/test_xlsx_debug.rs`  | Excel 文件读写调试                                                                          |
 | `src-tauri/src/services/xlsx_writer.rs`（底部） | 12 个单元测试覆盖空工作簿、单元格修改、模板读写                                      |
 
-运行：`cd src-tauri && cargo test`（共 88 个测试）
+运行：`cd src-tauri && cargo test`（共 88 个测试）+ `npx vitest run`（前端 14 个测试）
+
+## 前端架构
+
+- **Hooks**：`src/hooks/useAggregation.ts`（数据汇总）、`src/hooks/useAnalysis.ts`（AI 分析），封装 invoke/listen 逻辑
+- **工具函数**：`src/utils/format.ts` — `formatElapsed()`、`timestamp()`、`formatProgress()`
+- **错误体系**：`AppError` 6 类（FILE_LOCKED / API_KEY / API_TIMEOUT / NETWORK / QUALITY / UNKNOWN），前端 `translateError()` 自动分类
+- **进度格式**：启动行 `[N/T] <step>`，完成行 `[N/T] 已用时: X分XX秒 <step>`，`status=done` 事件过滤不显示
+- **UI**：单页面模式，窗口 920x620；"打开结果"按钮仅三阶段全部完成后激活（绿色）
+- **测试**：`src/__tests__/` 下有 store 测试和工具函数测试（Vitest + jsdom）
 
 ## 注意事项
 
@@ -202,7 +215,9 @@ npm run tauri build
 - 便携版构建产物在 `release-portable/`
 - VBA 原型在 `业务原型/` 目录，仅作历史参考，不参与构建
 - `polars` 依赖已在 Cargo.toml 中注释预留，尚未启用
-- umya-spreadsheet 依赖仅保留 `error.rs` 中的 `From` trait（向后兼容），运行时已完全替换为 Route 2
+- umya-spreadsheet 依赖已完全移除（v0.7.0）
 - `open_project` 会自动从 `companies.toml` 补齐空公司列表
+- 保险业态分析取数范围：A1:D18（详细指标）+ F1:H25（月度规模保费）
+- `ProgressStatus` 序列化为 snake_case（`running`/`done`/`error`）
 - 保险业态分析取数范围：A1:D18（详细指标）+ F1:H25（月度规模保费）
 - 详细架构设计请参考 `DESIGN.md`

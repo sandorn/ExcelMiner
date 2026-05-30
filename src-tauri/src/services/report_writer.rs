@@ -394,23 +394,16 @@ fn sanitize_text(text: &str) -> String {
             _ => c,
         })
         .collect();
-    // 压缩连续空行：最多保留一个空行，去除首尾空行
+    // 去除所有空行（AI提示词要求"各段之间不空行"），保留非空行
     let mut result = String::with_capacity(cleaned.len());
-    let mut prev_empty = false;
     for line in cleaned.lines() {
         let trimmed = line.trim();
-        if trimmed.is_empty() {
-            if !prev_empty && !result.is_empty() {
-                result.push('\n');
-                prev_empty = true;
-            }
-        } else {
-            result.push_str(line);
+        if !trimmed.is_empty() {
+            result.push_str(line.trim());
             result.push('\n');
-            prev_empty = false;
         }
     }
-    // 去除尾部空行
+    // 去除尾部的换行
     while result.ends_with('\n') {
         result.pop();
     }

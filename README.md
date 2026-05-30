@@ -1,6 +1,8 @@
 # ExcelMiner — 子公司经营数据汇总分析系统
 
-基于 Tauri v2 的桌面应用，自动汇总多子公司 Excel 经营数据，调用 DeepSeek 大模型按业态生成经营分析报告及 PPT 文案。
+基于 Tauri v2 的桌面应用，自动汇总多子公司 Excel 经营数据，调用 DeepSeek 大模型按业态生成经营分析报告。
+
+**当前版本**: v0.7.0
 
 ## 技术栈
 
@@ -10,10 +12,19 @@
 | 前端        | React 18 + TypeScript + Ant Design 5 |
 | 状态管理    | Zustand 5                            |
 | Excel 读取  | calamine 0.26                        |
-| Excel 写入  | 纯 Rust ZIP+XML（Route 2）           |
+| Excel 写入  | 纯 Rust ZIP+XML（Route 2，~1100 行） |
 | HTTP 客户端 | reqwest 0.12（rustls-tls）           |
 | AI 模型     | DeepSeek Chat API                    |
 | 构建产物    | `release-portable/` 便携版           |
+
+## 功能概览
+
+| 阶段 | 功能 | 说明 |
+|------|------|------|
+| 1. 数据汇总 | 4 引擎并行汇总 | 保险（2 家）/ 酒店（2 家）/ 商写（5 家）/ 经营报表（9 家） |
+| 2. 板块分析 | 3 板块 AI 分析 | 商写 / 保险 / 酒店，带专属提示词和数据过滤 |
+| 3. 公司分析 | 9 公司 AI 分析 | 并发调用（Semaphore=3），质量评分 + 自动重试 |
+| 导出 | 打开结果文件 | 三阶段完成后按钮激活，定位 xlsx |
 
 ## 系统要求
 
@@ -27,17 +38,17 @@
 ## 快速开始
 
 ```bash
-# 安装依赖
-npm install
+npm install                # 安装依赖
+npm run tauri dev          # 开发模式（Vite + Tauri）
+npm run tauri build        # 构建便携版
+```
 
-# 开发模式（Vite + Tauri）
-npm run tauri dev
+## 测试
 
-# 仅启动前端开发服务器
-npm run dev
-
-# 构建便携版
-npm run tauri build
+```bash
+cd src-tauri && cargo test  # Rust 后端（88 个测试）
+npx vitest run              # 前端（13 个测试）
+npx tsc --noEmit            # TypeScript 类型检查
 ```
 
 ## 文档索引
@@ -50,16 +61,6 @@ npm run tauri build
 | [GAP_ANALYSIS.md](GAP_ANALYSIS.md)   | VBA 原型 vs Rust 实现对比    | 开发者 / 维护者   |
 | [CHANGELOG.md](CHANGELOG.md)         | 版本变更日志                 | 所有人            |
 | [CLAUDE.md](CLAUDE.md)               | AI 助手指南（项目速览）      | AI 工具           |
-
-## 开发
-
-```bash
-# Rust 后端测试
-cd src-tauri && cargo test
-
-# 前端类型检查
-npx tsc --noEmit
-```
 
 ## 许可
 
